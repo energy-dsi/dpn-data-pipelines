@@ -1,0 +1,13 @@
+namespace: dsi-data-pipelines
+name: dsi-eq-consumer-mapper-extractor
+aws_act_no: "647746917454"
+deployment: AZURE
+env: eso-nonprod
+kafka_server: [EVENTHUB_NAME].servicebus.windows.net:9093
+source_topic: dsi-consumer-eq-valid-schema
+target_topic: dsi-consumer-eq-knowledge
+container_name: [CONTAINER_NAME]
+folder_name: dsi-eq-extractor
+file_name: EQ_export.xml
+image_name: [CONTAINER_REGISTRY_NAME].azurecr.io/dsi/mapper-consumer-extractor-eq
+image_semver: latest

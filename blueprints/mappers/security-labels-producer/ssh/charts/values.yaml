@@ -1,0 +1,10 @@
+namespace: dsi-data-pipelines
+name: dsi-ssh-producer-mapper-security-labels
+aws_act_no: "647746917454"
+deployment: AZURE
+env: eso-nonprod
+kafka_server: [EVENTHUB_NAME].servicebus.windows.net:9093
+source_topic: dsi-producer-ssh-valid-schema
+target_topic: dsi-producer-ssh-knowledge
+image_name: [CONTAINER_REGISTRY_NAME].azurecr.io/dsi/mapper-producer-security-labels-ssh
+image_semver: latest

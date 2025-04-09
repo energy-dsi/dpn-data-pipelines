@@ -1,0 +1,52 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Values.name }}
+  namespace: {{ .Values.namespace }}
+spec:
+  template:
+    spec:
+      containers:
+        - name: {{ .Values.name }}
+          image: {{ .Values.image_name }}:{{ .Values.image_semver }}
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+            runAsUser: 10000
+            runAsNonRoot: true
+          command: ['python', 'producer.py']
+          envFrom:
+          - configMapRef:
+              name: {{ .Values.name }}
+          env:
+          - name: BOOTSTRAP_SERVERS
+            value: {{ .Values.kafka_server }}
+          - name: PRODUCER_NAME
+            value: {{ .Values.producer_name }}
+          - name: SOURCE_NAME
+            value: {{ .Values.source_name }}
+          - name: TARGET_TOPIC
+            value: {{ .Values.target_topic }}
+          - name: EVENTHUB_CONNECTION_STRING
+            valueFrom:
+              secretKeyRef:
+                name: eventhub-connection-string
+                key: secret
+          - name: BLOB_SAS_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: blob-sas-token
+                key: secret
+      restartPolicy: Never
+      automountServiceAccountToken: false

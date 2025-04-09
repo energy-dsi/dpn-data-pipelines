@@ -1,0 +1,11 @@
+namespace: dsi-data-pipelines
+name: dsi-dl-adaptor
+aws_act_no: "647746917454"
+deployment: AZURE
+env: eso-nonprod
+kafka_server: [EVENTHUB_NAME].servicebus.windows.net:9093
+source_name: DL.xml
+target_topic: dsi-producer-dl-raw
+producer_name: cim-dl-producer
+image_name: [CONTAINER_REGISTRY_NAME].azurecr.io/dsi/adaptor-dl
+image_semver: latest

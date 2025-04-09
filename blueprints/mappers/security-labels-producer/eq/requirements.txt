@@ -1,0 +1,13 @@
+python-dotenv==1.0.1
+rdflib==6.3.2
+telicent_ies_tool==1.0.3
+confluent_kafka==2.3.0
+colored==1.4.4
+PyJWT==2.8.0
+pytz==2022.6
+Requests==2.32.3
+Werkzeug==3.1.3
+opentelemetry-api==1.29.0
+pandas==2.2.3
+telicent_label_builder==0.1.7
+pydantic==2.10.6

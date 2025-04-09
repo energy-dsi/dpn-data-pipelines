@@ -1,0 +1,4 @@
+apiVersion: v2
+name: mapper-extractor
+description: A Helm chart for the DSI Mapper Extractor pipeline.
+version: 0.0.1

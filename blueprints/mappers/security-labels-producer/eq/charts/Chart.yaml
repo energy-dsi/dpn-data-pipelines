@@ -1,0 +1,4 @@
+apiVersion: v2
+name: mapper-security-labels
+description: A Helm chart for the DSI Mapper Security Labels pipeline.
+version: 0.0.1

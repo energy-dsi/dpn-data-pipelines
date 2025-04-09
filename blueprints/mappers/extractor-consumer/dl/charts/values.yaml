@@ -1,0 +1,13 @@
+namespace: dsi-data-pipelines
+name: dsi-dl-consumer-mapper-extractor
+aws_act_no: "647746917454"
+deployment: AZURE
+env: eso-nonprod
+kafka_server: [EVENTHUB_NAME].servicebus.windows.net:9093
+source_topic: dsi-consumer-dl-valid-schema
+target_topic: dsi-consumer-dl-knowledge
+container_name: [CONTAINER_NAME]
+folder_name: dsi-dl-extractor
+file_name: DL_export.xml
+image_name: [CONTAINER_REGISTRY_NAME].azurecr.io/dsi/mapper-consumer-extractor-dl
+image_semver: latest

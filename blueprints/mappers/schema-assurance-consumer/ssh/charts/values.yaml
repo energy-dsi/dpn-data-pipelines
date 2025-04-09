@@ -1,0 +1,10 @@
+namespace: dsi-data-pipelines
+name: dsi-ssh-consumer-mapper-schema-assurance
+aws_act_no: "647746917454"
+deployment: AZURE
+env: eso-nonprod
+kafka_server: [EVENTHUB_NAME].servicebus.windows.net:9093
+source_topic: [SOURCE]-dsi-producer-ssh-knowledge
+target_topic: dsi-consumer-ssh-valid-schema
+image_name: [CONTAINER_REGISTRY_NAME].azurecr.io/dsi/mapper-consumer-schema-assurance-ssh
+image_semver: latest
