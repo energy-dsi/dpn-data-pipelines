@@ -12,7 +12,7 @@ RUN apk update && apk add gcc=14.2.0-r4 g++=14.2.0-r4
 # Install python3-dev and build-essential
 RUN apk update && apk add python3-dev=3.12.9-r0
 RUN apk update && apk add build-base=0.5-r3
-RUN apk update && apk add librdkafka-dev=2.6.1-r0
+RUN apk update && apk add librdkafka-dev
 
 # Create a virtual environment and activate it
 RUN python3 -m venv /mapper-schema-assurance/venv && chown -R appuser:appgroup /mapper-schema-assurance
