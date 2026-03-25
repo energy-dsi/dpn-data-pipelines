@@ -79,7 +79,7 @@ def generate_records() -> Iterable[Record]:
     )
     return create_record(data)
 
-if __name__ == "__main__":
+if __name__ == "__main__": # pragma: no cover 
 
     # Generate the message content
     message_content = generate_records()

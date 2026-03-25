@@ -72,7 +72,7 @@ def mapping_function(record: Record) ->  Record | list[Record] | None:
     return mapped_record
     
 
-if __name__ == "__main__":
+if __name__ == "__main__": # pragma: no cover 
 
     # Obtain the producer and consumer connection strings
     eventhub_conn_str = base64.b64decode(os.environ['EVENTHUB_CONNECTION_STRING']).decode('utf-8').replace('\n', '')
