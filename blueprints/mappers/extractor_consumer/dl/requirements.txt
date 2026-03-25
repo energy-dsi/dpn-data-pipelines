@@ -7,3 +7,4 @@ Werkzeug==3.1.7
 opentelemetry-api 
 pandas==2.2.3
 telicent-lib==5.0.2
+azure-storage-blob==12.24.1
