@@ -1,5 +1,4 @@
 dsi_schema_assurance==1.0.4
-dsi_schema_assurance==1.0.4
 python-dotenv==1.0.1
 telicent_ies_tool==1.0.3
 requests==2.32.5
