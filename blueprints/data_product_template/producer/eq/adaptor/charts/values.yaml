@@ -1,0 +1,17 @@
+namespace: ns-dpn-01
+name: eqbd-adaptor
+configname: eqbd-adaptor-config
+# aws_act_no: "647746917454"
+deployment: AZURE
+env: dev
+acr_name: ""
+image_name: adaptor-eqbd
+image_tag: ""
+secretname: eqbd-adaptor-secrets
+bootstrap_servers: kafka-src:9092
+storage_account_url: <<your specific value>>
+target_topic: dsi-producer-eqbd-raw
+producer_name: eqbd-adaptor
+container_name: src
+source_name: blob-storage
+blob_name: EQBD.xml
