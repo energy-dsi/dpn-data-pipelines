@@ -12,14 +12,14 @@ load_dotenv()
 class EQFileProcess:
     def __init__(self):
         self.cloud_provider = os.getenv("cloudProviderType")
-        self.target_kafka_topic = os.getenv("mapperTopicName")
+        self.target_kafka_topic = os.getenv("targetTopicName")
         self.target_file_name = os.getenv("targetMapperFileName")
-        self.source_azure_conn_str = os.getenv("adaptorAzureConnectionString").strip()
-        self.source_container_name = os.getenv("adaptorContainerName")
-        self.target_container_name = os.getenv("mapperContainerName")
+        self.source_azure_conn_str = os.getenv("srcConnectionString").strip()
+        self.source_container_name = os.getenv("srcContainerName")
+        self.target_container_name = os.getenv("targetContainerName")
         self.source_blob_name = os.getenv("sourceFileName")
         self.boostrap_server = os.getenv("bootstrapServer")
-        self.target_azure_conn_str = os.getenv("mapperAzureConnectionString").strip()
+        self.target_azure_conn_str = os.getenv("targetConnectionString").strip()
 
         self.logger = Logging().create_logger()
 
