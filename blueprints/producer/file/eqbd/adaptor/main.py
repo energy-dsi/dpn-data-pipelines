@@ -14,12 +14,12 @@ load_dotenv()
 class AdaptorFileProcess:
     def __init__(self):
         self.cloud_provider = os.getenv("cloudProviderType")
-        self.target_kafka_topic = os.getenv("targetTopicName")
+        self.target_kafka_topic = os.getenv("mapperTopicName")
         self.source_azure_conn_str = os.getenv("srcConnectionString").strip()
         self.source_container_name = os.getenv("srcContainerName")
-        self.target_container_name = os.getenv("targetContainerName")
+        self.target_container_name = os.getenv("mapperContainerName")
         self.boostrap_server = os.getenv("bootstrapServer")
-        self.target_azure_conn_str = os.getenv("targetConnectionString").strip()
+        self.target_azure_conn_str = os.getenv("mapperConnectionString").strip()
 
         self.logger = Logging().create_logger()
 

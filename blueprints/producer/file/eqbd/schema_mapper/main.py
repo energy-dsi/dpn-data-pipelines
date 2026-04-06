@@ -10,13 +10,13 @@ load_dotenv()
 class SchemaMapper:
     def __init__(self):
         self.cloud_provider = os.getenv("cloudProviderType")
-        self.target_kafka_topic = os.getenv("dataProducerTopicName")
-        self.source_kafka_topic = os.getenv("targetTopicName")
-        self.source_azure_conn_str = os.getenv("targetConnectionString").strip()
-        self.source_container_name = os.getenv("targetContainerName")
-        self.target_container_name = os.getenv("dataProducerContainerName")
+        self.target_kafka_topic = os.getenv("targetTopicName")
+        self.source_kafka_topic = os.getenv("mapperTopicName")
+        self.source_azure_conn_str = os.getenv("mapperConnectionString").strip()
+        self.source_container_name = os.getenv("mapperContainerName")
+        self.target_container_name = os.getenv("targetContainerName")
         self.boostrap_server = os.getenv("bootstrapServer")
-        self.target_azure_conn_str = os.getenv("dataProducerAzureConnectionString").strip()
+        self.target_azure_conn_str = os.getenv("targetConnectionString").strip()
 
         self.logger = Logging().create_logger()
 
