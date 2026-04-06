@@ -11,11 +11,10 @@ class SchemaMapper:
     def __init__(self):
         self.cloud_provider = os.getenv("cloudProviderType")
         self.target_kafka_topic = os.getenv("dataProducerTopicName")
-        self.target_file_name = os.getenv("dataProducerFileName")
+        self.source_kafka_topic = os.getenv("targetTopicName")
         self.source_azure_conn_str = os.getenv("targetConnectionString").strip()
         self.source_container_name = os.getenv("targetContainerName")
         self.target_container_name = os.getenv("dataProducerContainerName")
-        self.source_blob_name = os.getenv("targetMapperFileName")
         self.boostrap_server = os.getenv("bootstrapServer")
         self.target_azure_conn_str = os.getenv("dataProducerAzureConnectionString").strip()
 
@@ -25,12 +24,33 @@ class SchemaMapper:
             source_azure_conn_str=self.source_azure_conn_str,
             source_container_name=self.source_container_name,
             target_container_name=self.target_container_name,
-            source_blob_name=self.source_blob_name,
-            target_blob_name=self.target_file_name,
+            source_blob_name=None,
+            target_blob_name=None,
             target_azure_conn_str = self.target_azure_conn_str,
         )
 
         self.kafka_trans = KafkaTransection(boostrap_server=self.boostrap_server)
+
+    def read_from_kafka_topic(self):
+        # file_name, container_name = self.kafka_trans.read_message(self, topic_name = source_kafka_topic)
+        file_name = "eq.xml"
+        self.data_trans.source_blob_name = file_name
+        self.data_trans.target_blob_name = file_name
+
+    def compare_file_and_ts(self, source_file_info, target_file_info):
+        common_keys = source_file_info.keys() & target_file_info.keys()
+        new_file = source_file_info.keys() - target_file_info.keys()
+        file_to_process = list()
+        for key in common_keys:
+            if source_file_info[key] > target_file_info[key]:
+                file_to_process.append(key)
+
+        file_to_process.extend(new_file)
+        return file_to_process
+
+    def read_file_info(self):
+        source_file_info, target_file_info = self.data_trans.read_file_info(cloud_vendor = self.cloud_provider)
+        return source_file_info, target_file_info
 
     def read_records(self):
         data = self.data_trans.data_read(cloud_vendor=self.cloud_provider)
@@ -41,6 +61,9 @@ class SchemaMapper:
 
 def main():
     schema_mapper = SchemaMapper()
+    schema_mapper.read_from_kafka_topic()
+    source_file_info, target_file_info = schema_mapper.read_file_info()
+    process_files = schema_mapper.compare_file_and_ts(source_file_info = source_file_info, target_file_info = target_file_info)
     data = schema_mapper.read_records()
     schema_mapper.write_records(data=data)
     # schema_mapper.send_to_kafka()
