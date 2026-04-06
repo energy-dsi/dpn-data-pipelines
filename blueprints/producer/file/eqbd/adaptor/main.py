@@ -9,7 +9,7 @@ from utils.logging import Logging
 load_dotenv()
 
 
-class EQBDFileProcess:
+class AdaptorFileProcess:
     def __init__(self):
         self.cloud_provider = os.getenv("cloudProviderType")
         self.target_kafka_topic = os.getenv("targetTopicName")
@@ -54,10 +54,10 @@ class EQBDFileProcess:
         )
 
 def main():
-    eqbd_file_process = EQBDFileProcess()
-    data = eqbd_file_process.read_records()
-    eqbd_file_process.write_records(data=data)
-    # eqbd_file_process.send_to_kafka()
+    adaptor_file_process = AdaptorFileProcess()
+    data = adaptor_file_process.read_records()
+    adaptor_file_process.write_records(data=data)
+    # adaptor_file_process.send_to_kafka()
 
 if __name__ == "__main__":
     main()

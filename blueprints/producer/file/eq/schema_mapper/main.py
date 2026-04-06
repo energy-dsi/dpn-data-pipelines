@@ -7,7 +7,7 @@ from utils.logging import Logging
 
 load_dotenv()
 
-class EQSchemaMapper:
+class SchemaMapper:
     def __init__(self):
         self.cloud_provider = os.getenv("cloudProviderType")
         self.target_kafka_topic = os.getenv("dataProducerTopicName")
@@ -40,10 +40,10 @@ class EQSchemaMapper:
         self.data_trans.write_data(cloud_vendor=self.cloud_provider, data=data)
 
 def main():
-    eq_schema_validate = EQSchemaMapper()
-    data = eq_schema_validate.read_records()
-    eq_schema_validate.write_records(data=data)
-    # eq_schema_validate.send_to_kafka()
+    schema_mapper = SchemaMapper()
+    data = schema_mapper.read_records()
+    schema_mapper.write_records(data=data)
+    # schema_mapper.send_to_kafka()
 
 if __name__ == "__main__":
     main()
