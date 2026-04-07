@@ -1,8 +1,8 @@
-import os
-import schedule
-import time
 import base64
+import os
+import time
 
+import schedule
 from dotenv import load_dotenv
 
 from utils.data_transection import DataTransection
@@ -16,11 +16,15 @@ class ExtractorFileProcess:
     def __init__(self):
         self.cloud_provider = os.getenv("cloudProviderType")
         self.target_kafka_topic = os.getenv("mapperTopicName")
-        self.source_azure_conn_str = base64.b64decode(os.getenv("srcConnectionString")).decode("utf-8")
+        self.source_azure_conn_str = base64.b64decode(
+            os.getenv("srcConnectionString")
+        ).decode("utf-8")
         self.source_container_name = os.getenv("srcContainerName")
         self.target_container_name = os.getenv("mapperContainerName")
         self.boostrap_server = os.getenv("bootstrapServer")
-        self.target_azure_conn_str = base64.b64decode(os.getenv("mapperConnectionString")).decode("utf-8")
+        self.target_azure_conn_str = base64.b64decode(
+            os.getenv("mapperConnectionString")
+        ).decode("utf-8")
 
         self.logger = Logging().create_logger()
 
@@ -30,25 +34,29 @@ class ExtractorFileProcess:
             target_container_name=self.target_container_name,
             source_blob_name=None,
             target_blob_name=None,
-            target_azure_conn_str = self.target_azure_conn_str,
+            target_azure_conn_str=self.target_azure_conn_str,
         )
 
         self.kafka_trans = KafkaTransection(boostrap_server=self.boostrap_server)
 
         self.logger.info("cloudProviderType : %s ", self.cloud_provider)
         self.logger.info("mapperTopicName : %s", self.target_kafka_topic)
-        self.logger.info("srcConnectionString : %s",self.source_azure_conn_str)
-        self.logger.info("srcContainerName : %s",self.source_container_name)
-        self.logger.info("mapperContainerName : %s",self.target_container_name)
-        self.logger.info("bootstrapServer : %s",self.boostrap_server)
-        self.logger.info("mapperConnectionString : %s",self.target_azure_conn_str)
+        self.logger.info("srcConnectionString : %s", self.source_azure_conn_str)
+        self.logger.info("srcContainerName : %s", self.source_container_name)
+        self.logger.info("mapperContainerName : %s", self.target_container_name)
+        self.logger.info("bootstrapServer : %s", self.boostrap_server)
+        self.logger.info("mapperConnectionString : %s", self.target_azure_conn_str)
 
     def compare_file(self, source_file_info, target_file_info):
-        file_name = self.data_trans.compare_file_and_ts(source_file_info = source_file_info, target_file_info = target_file_info)
+        file_name = self.data_trans.compare_file_and_ts(
+            source_file_info=source_file_info, target_file_info=target_file_info
+        )
         return file_name
 
     def read_file_info(self):
-        source_file_info, target_file_info = self.data_trans.read_file_info(cloud_vendor = self.cloud_provider)
+        source_file_info, target_file_info = self.data_trans.read_file_info(
+            cloud_vendor=self.cloud_provider
+        )
         return source_file_info, target_file_info
 
     def read_records(self, file_name):
@@ -61,25 +69,31 @@ class ExtractorFileProcess:
         self.data_trans.write_data(cloud_vendor=self.cloud_provider, data=data)
 
     def send_to_kafka(self, file_name):
-        message = {"sourceType": self.cloud_provider,
+        message = {
+            "sourceType": self.cloud_provider,
             "storageContainer": self.target_container_name,
-            "path": file_name}
+            "path": file_name,
+        }
 
         self.kafka_trans.send_message(
             target_topic=self.target_kafka_topic, message=message
         )
 
+
 def main():
     print("invoked")
     extractor_file_process = ExtractorFileProcess()
     source_file_info, target_file_info = extractor_file_process.read_file_info()
-    process_files = extractor_file_process.compare_file(source_file_info = source_file_info, target_file_info = target_file_info)
+    process_files = extractor_file_process.compare_file(
+        source_file_info=source_file_info, target_file_info=target_file_info
+    )
     for file in process_files:
         print("file")
         print(file)
-        data = extractor_file_process.read_records(file_name = file)
+        data = extractor_file_process.read_records(file_name=file)
         extractor_file_process.write_records(data=data)
         # extractor_file_process.send_to_kafka(file_name = file)
+
 
 interval = int(os.getenv("scheduleInterval"))
 schedule.every(interval).seconds.do(main)
