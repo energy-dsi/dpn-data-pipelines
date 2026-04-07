@@ -5,6 +5,8 @@ FROM ${ACR_NAME}.azurecr.io/alpine:3.22
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
  
 # Install Python + build deps (NO VERSION PINNING)
+# Alpine base image is pinned (3.22), ensuring deterministic package versions.
+# Individual apk package pinning is avoided due to repository volatility.
 RUN apk add --no-cache \
     python3 \
     py3-pip \
