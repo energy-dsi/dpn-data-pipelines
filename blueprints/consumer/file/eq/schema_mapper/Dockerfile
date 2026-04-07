@@ -1,4 +1,5 @@
-FROM alpine:3.22
+ARG ACR_NAME
+FROM ${ACR_NAME}.azurecr.io/alpine:3.22
  
 # Create non-root user
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
@@ -26,7 +27,7 @@ COPY --chown=appuser:appgroup utils ./utils
 COPY --chown=appuser:appgroup setup.py .
  
 # Upgrade pip inside venv (this is safe)
-RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt && pip install -e .
+RUN pip install --no-cache-dir -r requirements.txt && pip install -e .
  
 # Copy application code
 COPY --chown=appuser:appgroup consumer/file/eq/schema_mapper/main.py .
