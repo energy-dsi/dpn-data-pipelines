@@ -1,4 +1,5 @@
 import os
+import base64
 from dotenv import load_dotenv
 
 from utils.data_transection import DataTransection
@@ -12,7 +13,7 @@ class SchemaMapper:
         self.cloud_provider = os.getenv("cloudProviderType")
         self.target_kafka_topic = os.getenv("targetTopicName")
         self.source_kafka_topic = os.getenv("mapperTopicName")
-        self.source_azure_conn_str = os.getenv("mapperConnectionString").strip()
+        self.source_azure_conn_str = base64.b64decode(os.getenv("mapperConnectionString")).decode("utf-8")
         self.source_container_name = os.getenv("mapperContainerName")
         self.target_container_name = os.getenv("targetContainerName")
         self.boostrap_server = os.getenv("bootstrapServer")

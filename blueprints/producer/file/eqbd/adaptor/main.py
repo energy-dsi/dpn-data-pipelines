@@ -1,6 +1,7 @@
 import os
 import schedule
 import time
+import base64
 
 from dotenv import load_dotenv
 
@@ -15,11 +16,11 @@ class AdaptorFileProcess:
     def __init__(self):
         self.cloud_provider = os.getenv("cloudProviderType")
         self.target_kafka_topic = os.getenv("mapperTopicName")
-        self.source_azure_conn_str = os.getenv("srcConnectionString").strip()
+        self.source_azure_conn_str = base64.b64decode(os.getenv("srcConnectionString")).decode("utf-8")
         self.source_container_name = os.getenv("srcContainerName")
         self.target_container_name = os.getenv("mapperContainerName")
         self.boostrap_server = os.getenv("bootstrapServer")
-        self.target_azure_conn_str = os.getenv("mapperConnectionString").strip()
+        self.target_azure_conn_str = base64.b64decode(os.getenv("mapperConnectionString")).decode("utf-8")
 
         self.logger = Logging().create_logger()
 

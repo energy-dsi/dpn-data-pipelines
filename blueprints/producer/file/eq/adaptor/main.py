@@ -1,6 +1,7 @@
 import os
 import schedule
 import time
+import base64
 
 from dotenv import load_dotenv
 
@@ -15,11 +16,11 @@ class AdaptorFileProcess:
     def __init__(self):
         self.cloud_provider = os.getenv("cloudProviderType")
         self.target_kafka_topic = os.getenv("mapperTopicName")
-        self.source_azure_conn_str = os.getenv("srcConnectionString").strip()
+        self.source_azure_conn_str = base64.b64decode(os.getenv("srcConnectionString")).decode("utf-8")
         self.source_container_name = os.getenv("srcContainerName")
         self.target_container_name = os.getenv("mapperContainerName")
         self.boostrap_server = os.getenv("bootstrapServer")
-        self.target_azure_conn_str = os.getenv("mapperConnectionString").strip()
+        self.target_azure_conn_str = base64.b64decode(os.getenv("mapperConnectionString")).decode("utf-8")
 
         self.logger = Logging().create_logger()
 
@@ -36,6 +37,14 @@ class AdaptorFileProcess:
 
         print(f"self.cloud_provider: {self.cloud_provider}")
         print(f"self.source_azure_conn_str: {self.source_azure_conn_str}")
+
+        self.logger.info("cloudProviderType %s ", self.cloud_provider)
+        self.logger.info("mapperTopicName %s", self.target_kafka_topic)
+        self.logger.info("srcConnectionString %s",self.source_azure_conn_str)
+        self.logger.info("srcContainerName %s",self.source_container_name)
+        self.logger.info("mapperContainerName %s",self.target_container_name)
+        self.logger.info("bootstrapServer %s",self.boostrap_server)
+        self.logger.info("mapperConnectionString %s",self.target_azure_conn_str)
 
     def compare_file(self, source_file_info, target_file_info):
         file_name = self.data_trans.compare_file_and_ts(source_file_info = source_file_info, target_file_info = target_file_info)
