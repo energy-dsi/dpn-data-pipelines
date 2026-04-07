@@ -14,12 +14,12 @@ RUN apk add --no-cache \
     librdkafka-dev
  
 # Create virtual environment
-RUN python3 -m venv /schema_mapper/venv && chown -R appuser:appgroup /schema_mapper
-ENV PATH="/schema_mapper/venv/bin:$PATH"
+RUN python3 -m venv /extractor/venv && chown -R appuser:appgroup /extractor
+ENV PATH="/extractor/venv/bin:$PATH"
  
-WORKDIR /schema_mapper
+WORKDIR /extractor
 USER appuser
-
+ 
 # Copy dependencies
 COPY --chown=appuser:appgroup requirements.txt .
 COPY --chown=appuser:appgroup utils ./utils
@@ -29,7 +29,7 @@ COPY --chown=appuser:appgroup setup.py .
 RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt && pip install -e .
  
 # Copy application code
-COPY --chown=appuser:appgroup blueprints/producer/file/eqbd/schema_mapper/main.py .
-COPY --chown=appuser:appgroup blueprints/producer/file/eqbd/.env .
+COPY --chown=appuser:appgroup consumer/file/eq/extractor/main.py .
+COPY --chown=appuser:appgroup consumer/file/eq/.env .
 
 CMD ["python", "main.py"]

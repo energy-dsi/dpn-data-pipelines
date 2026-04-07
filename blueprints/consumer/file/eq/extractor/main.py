@@ -12,7 +12,7 @@ from utils.logging import Logging
 load_dotenv()
 
 
-class AdaptorFileProcess:
+class ExtractorFileProcess:
     def __init__(self):
         self.cloud_provider = os.getenv("cloudProviderType")
         self.target_kafka_topic = os.getenv("mapperTopicName")
@@ -35,8 +35,13 @@ class AdaptorFileProcess:
 
         self.kafka_trans = KafkaTransection(boostrap_server=self.boostrap_server)
 
-        print(f"self.cloud_provider: {self.cloud_provider}")
-        print(f"self.source_azure_conn_str: {self.source_azure_conn_str}")
+        self.logger.info("cloudProviderType : %s ", self.cloud_provider)
+        self.logger.info("mapperTopicName : %s", self.target_kafka_topic)
+        self.logger.info("srcConnectionString : %s",self.source_azure_conn_str)
+        self.logger.info("srcContainerName : %s",self.source_container_name)
+        self.logger.info("mapperContainerName : %s",self.target_container_name)
+        self.logger.info("bootstrapServer : %s",self.boostrap_server)
+        self.logger.info("mapperConnectionString : %s",self.target_azure_conn_str)
 
     def compare_file(self, source_file_info, target_file_info):
         file_name = self.data_trans.compare_file_and_ts(source_file_info = source_file_info, target_file_info = target_file_info)
@@ -66,15 +71,15 @@ class AdaptorFileProcess:
 
 def main():
     print("invoked")
-    adaptor_file_process = AdaptorFileProcess()
-    source_file_info, target_file_info = adaptor_file_process.read_file_info()
-    process_files = adaptor_file_process.compare_file(source_file_info = source_file_info, target_file_info = target_file_info)
+    extractor_file_process = ExtractorFileProcess()
+    source_file_info, target_file_info = extractor_file_process.read_file_info()
+    process_files = extractor_file_process.compare_file(source_file_info = source_file_info, target_file_info = target_file_info)
     for file in process_files:
         print("file")
         print(file)
-        data = adaptor_file_process.read_records(file_name = file)
-        adaptor_file_process.write_records(data=data)
-        # adaptor_file_process.send_to_kafka(file_name = file)
+        data = extractor_file_process.read_records(file_name = file)
+        extractor_file_process.write_records(data=data)
+        # extractor_file_process.send_to_kafka(file_name = file)
 
 interval = int(os.getenv("scheduleInterval"))
 schedule.every(interval).seconds.do(main)
