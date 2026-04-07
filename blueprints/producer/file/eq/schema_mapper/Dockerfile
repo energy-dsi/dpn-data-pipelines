@@ -24,15 +24,15 @@ WORKDIR /schema_mapper
 USER appuser
 
 # Copy dependencies
-COPY --chown=appuser:appgroup requirements.txt .
-COPY --chown=appuser:appgroup utils ./utils
-COPY --chown=appuser:appgroup setup.py .
+COPY --chown=root:root --chmod=755 requirements.txt .
+COPY --chown=root:root --chmod=755 utils ./utils
+COPY --chown=root:root --chmod=755 setup.py .
  
 # Upgrade pip inside venv (this is safe)
 RUN pip install --no-cache-dir -r requirements.txt && pip install -e .
  
 # Copy application code
-COPY --chown=appuser:appgroup blueprints/producer/file/eq/schema_mapper/main.py .
-COPY --chown=appuser:appgroup blueprints/producer/file/eq/.env .
+COPY --chown=root:root --chmod=755 blueprints/producer/file/eq/schema_mapper/main.py .
+COPY --chown=root:root --chmod=755 blueprints/producer/file/eq/.env .
 
 CMD ["python", "main.py"]
