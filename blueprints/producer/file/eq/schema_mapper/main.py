@@ -17,7 +17,7 @@ class SchemaMapper:
         self.source_container_name = os.getenv("mapperContainerName")
         self.target_container_name = os.getenv("targetContainerName")
         self.boostrap_server = os.getenv("bootstrapServer")
-        self.target_azure_conn_str = os.getenv("targetConnectionString").strip()
+        self.target_azure_conn_str = base64.b64decode(os.getenv("targetConnectionString")).decode("utf-8")
 
         self.logger = Logging().create_logger()
 
