@@ -8,14 +8,14 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 # Alpine base image is pinned (3.22), ensuring deterministic package versions.
 # Individual apk package pinning is avoided due to repository volatility.
 RUN apk add --no-cache \
-    python3 \
-    py3-pip \
-    python3-dev \
-    gcc \
-    g++ \
-    build-base \
-    librdkafka-dev
- 
+    python3=3.11.8-r0 \
+    py3-pip=23.3.2-r0 \
+    python3-dev=3.11.8-r0 \
+    gcc=12.2.1_git20220924-r10 \
+    g++=12.2.1_git20220924-r10 \
+    build-base=0.5-r3 \
+    librdkafka-dev=2.2.0-r0
+
 # Create virtual environment
 RUN python3 -m venv /schema_mapper/venv && chown -R appuser:appgroup /schema_mapper
 ENV PATH="/schema_mapper/venv/bin:$PATH"
