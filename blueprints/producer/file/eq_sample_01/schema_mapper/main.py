@@ -26,6 +26,9 @@ class SchemaMapper:
         self.target_azure_conn_str = base64.b64decode(
             os.getenv("targetConnectionString")
         ).decode("utf-8")
+        self.org_name = os.getenv("orgName")
+        self.schema_type = os.getenv("schemaType")
+        self.file_name = None
 
         self.logger = Logging().create_logger()
 
@@ -103,14 +106,15 @@ class SchemaMapper:
         Return:
             None 
         """
-        self.data_trans.file_move(cloud_vendor = self.cloud_provider, file_name = file)
+        self.file_name = self.schema_type.lower() + "-" + self.org_name.lower() + "-" + file.replace(" ", "_").replace("-", "_").lower()
+        self.data_trans.file_move(cloud_vendor = self.cloud_provider, file_name = file, dest_file_name = self.file_name)
 
-    def send_to_kafka(self, file_name: str) -> None:
+    def send_to_kafka(self) -> None:
         """
         Send a Kafka message to the mapper kafka topic
         
         Args:
-            file_name (string): The file moved to the mapper container
+            None
 
         Return:
             None 
@@ -119,7 +123,7 @@ class SchemaMapper:
         message = {
             "sourceType": self.cloud_provider,
             "storageContainer": self.target_container_name,
-            "path": file_name,
+            "path": self.file_name,
         }
         print(f"Kafka message: {message}")
         # Sent a kafka message
@@ -145,12 +149,14 @@ def main():
         is_valid = schema_mapper.schema_validation(data)
         if is_valid == True:
             schema_mapper.move_files(file = file_name)
-            schema_mapper.send_to_kafka(file_name = file_name)
+            schema_mapper.send_to_kafka()
 
 
 # Scheduler to invoke the `main()` function in given interval 
-interval = int(os.getenv("scheduleInterval"))
-schedule.every(interval).seconds.do(main)
-while True:
-    schedule.run_pending()
-    time.sleep(1)
+# interval = int(os.getenv("scheduleInterval"))
+# schedule.every(interval).seconds.do(main)
+# while True:
+#     schedule.run_pending()
+#     time.sleep(1)
+
+main()

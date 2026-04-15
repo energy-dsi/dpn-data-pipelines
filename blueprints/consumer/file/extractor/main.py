@@ -58,6 +58,7 @@ class ExtractorFileProcess:
             list: List of file name from the blob storage
         """
         source_file_name = self.data_trans.source_file_info(cloud_provider = self.cloud_provider)
+
         return source_file_name
 
     def move_files(self, file: str) -> None:
@@ -115,9 +116,11 @@ def main():
         extractor_file_process.move_files(file = file)
         extractor_file_process.send_to_kafka(file_name = file)
 
-# Scheduler to invoke the `main()` function in given interval 
-interval = int(os.getenv("scheduleInterval"))
-schedule.every(interval).seconds.do(main)
-while True:
-    schedule.run_pending()
-    time.sleep(1)
+# # Scheduler to invoke the `main()` function in given interval 
+# interval = int(os.getenv("scheduleInterval"))
+# schedule.every(interval).seconds.do(main)
+# while True:
+#     schedule.run_pending()
+#     time.sleep(1)
+
+main()

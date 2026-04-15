@@ -27,9 +27,10 @@ class SchemaMapper:
         self.target_azure_conn_str = base64.b64decode(
             os.getenv("targetConnectionString")
         ).decode("utf-8")
-        self.org_name = os.getenv("orgName")
-        self.schema_type = os.getenv("schemaType")
+        self.org_name = None
+        self.schema_type = None
         self.file_name = None
+        self.original_file_name = None
 
         self.logger = Logging().create_logger()
 
@@ -63,9 +64,17 @@ class SchemaMapper:
             file_name (string): File name from the Kafka Topic  
         """
         # file_name, container_name = self.kafka_trans.read_message(self, topic_name = source_kafka_topic)
-        file_name = "eq-1001.xml"
+        file_name = "eq-neso-eqbd.xml"
         self.data_trans.source_blob_name = file_name
         self.data_trans.target_blob_name = file_name
+
+        file_props = file_name.split("-")
+
+        self.schema_type = file_props[0]
+        self.org_name = file_props[1]
+        self.original_file_name = file_props[2]
+
+        self.logger.info("file name properties: %s", file_props)
 
         return file_name
 
