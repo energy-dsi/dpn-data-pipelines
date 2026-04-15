@@ -47,54 +47,75 @@ class ExtractorFileProcess:
         self.logger.info("bootstrapServer : %s", self.boostrap_server)
         self.logger.info("mapperConnectionString : %s", self.target_azure_conn_str)
 
-    def compare_file(self, source_file_info, target_file_info):
-        file_name = self.data_trans.compare_file_and_ts(
-            source_file_info=source_file_info, target_file_info=target_file_info
-        )
-        return file_name
+    def read_source_file_info(self) -> list[str]:
+        """
+        Read the file name from the source blob storage
+        
+        Args:
+            None
 
-    def read_file_info(self):
-        source_file_info, target_file_info = self.data_trans.read_file_info(
-            cloud_vendor=self.cloud_provider
-        )
-        return source_file_info, target_file_info
+        Return:
+            list: List of file name from the blob storage
+        """
+        source_file_name = self.data_trans.source_file_info(cloud_provider = self.cloud_provider)
+        return source_file_name
 
-    def read_records(self, file_name):
-        self.data_trans.source_blob_name = file_name
-        self.data_trans.target_blob_name = file_name
-        data = self.data_trans.data_read(cloud_vendor=self.cloud_provider)
-        return data
+    def move_files(self, file: str) -> None:
+        """
+        Move the file from source blob storage to target blob storage
 
-    def write_records(self, data):
-        self.data_trans.write_data(cloud_vendor=self.cloud_provider, data=data)
+        Args:
+            file (string): file name to move
 
-    def send_to_kafka(self, file_name):
+        Return:
+            None 
+        """
+        self.data_trans.file_move(cloud_vendor = self.cloud_provider, file_name = file)
+
+    def send_to_kafka(self, file_name: str) -> None:
+        """
+        Send a Kafka message to the mapper kafka topic
+        
+        Args:
+            file_name (string): The file moved to the mapper container
+
+        Return:
+            None 
+        """
+        # Prepare a kafka message
         message = {
             "sourceType": self.cloud_provider,
             "storageContainer": self.target_container_name,
             "path": file_name,
         }
 
-        self.kafka_trans.send_message(
-            target_topic=self.target_kafka_topic, message=message
-        )
+        self.logger.info("Kafka message: %s", message)
+
+        # Sent a kafka message
+        # self.kafka_trans.send_message(
+        #     target_topic=self.target_kafka_topic, message=message
+        # )
 
 
 def main():
+    """
+    `main()` function to invoke the `ExtractorFileProcess` class
+
+    Args: 
+        None
+
+    Return:
+        None
+    """
     print("invoked")
     extractor_file_process = ExtractorFileProcess()
-    source_file_info, target_file_info = extractor_file_process.read_file_info()
-    process_files = extractor_file_process.compare_file(
-        source_file_info=source_file_info, target_file_info=target_file_info
-    )
-    for file in process_files:
-        print("file")
-        print(file)
-        data = extractor_file_process.read_records(file_name=file)
-        extractor_file_process.write_records(data=data)
-        # extractor_file_process.send_to_kafka(file_name = file)
+    source_files = extractor_file_process.read_source_file_info()
+    for file in source_files:
+        print(f"======================{file}=====================")
+        extractor_file_process.move_files(file = file)
+        extractor_file_process.send_to_kafka(file_name = file)
 
-
+# Scheduler to invoke the `main()` function in given interval 
 interval = int(os.getenv("scheduleInterval"))
 schedule.every(interval).seconds.do(main)
 while True:
