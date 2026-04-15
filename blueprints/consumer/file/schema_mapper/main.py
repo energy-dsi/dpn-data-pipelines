@@ -2,6 +2,7 @@ import base64
 import os
 
 from dotenv import load_dotenv
+from datetime import datetime
 
 from utils.data_transection import DataTransection
 from utils.kafka_transection import KafkaTransection
@@ -24,6 +25,9 @@ class SchemaMapper:
         self.target_azure_conn_str = base64.b64decode(
             os.getenv("targetConnectionString")
         ).decode("utf-8")
+        self.org_name = os.getenv("orgName")
+        self.schema_type = os.getenv("schemaType")
+        self.file_name = None
 
         self.logger = Logging().create_logger()
 
@@ -48,9 +52,9 @@ class SchemaMapper:
 
     def read_from_kafka_topic(self):
         # file_name, container_name = self.kafka_trans.read_message(self, topic_name = source_kafka_topic)
-        file_name = "eq.xml"
-        self.data_trans.source_blob_name = file_name
-        self.data_trans.target_blob_name = file_name
+        self.file_name = "eq-1001.xml"
+        self.data_trans.source_blob_name = self.file_name
+        # self.data_trans.target_blob_name = self.file_name
 
     def compare_file_and_ts(self, source_file_info, target_file_info):
         common_keys = source_file_info.keys() & target_file_info.keys()
@@ -74,8 +78,18 @@ class SchemaMapper:
         return data
 
     def write_records(self, data):
+        # create a blob file structure
+        self.file_name = self.schema_type.lower() + "-" + self.org_name.lower() + "-" + self.file_name.replace(" ", "_").replace("-", "_").lower()
+        date_str = datetime.now().strftime("%d%m%Y")
+        self.data_trans.target_blob_name = self.schema_type.lower() + "/" + date_str + "/" + self.org_name.lower() + "/" + self.file_name
         self.data_trans.write_data(cloud_vendor=self.cloud_provider, data=data)
 
+    def send_to_kafka(self):
+        message = {"sourceType": self.cloud_provider,
+            "storageContainer": self.target_container_name,
+            "path": self.file_name
+        }
+        print(message)
 
 def main():
     schema_mapper = SchemaMapper()
@@ -86,7 +100,7 @@ def main():
     )
     data = schema_mapper.read_records()
     schema_mapper.write_records(data=data)
-    # schema_mapper.send_to_kafka()
+    schema_mapper.send_to_kafka()
 
 
 if __name__ == "__main__":
