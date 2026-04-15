@@ -13,7 +13,14 @@ load_dotenv()
 
 
 class AdaptorFileProcess:
+    """
+    File process class for Adaptor
+    """
+
     def __init__(self):
+        """
+        Initializes the AdaptorFileProcess instance
+        """
         self.cloud_provider = os.getenv("cloudProviderType")
         self.target_kafka_topic = os.getenv("mapperTopicName")
         self.source_azure_conn_str = base64.b64decode(
@@ -26,8 +33,10 @@ class AdaptorFileProcess:
             os.getenv("mapperConnectionString")
         ).decode("utf-8")
 
+        # logger object creation
         self.logger = Logging().create_logger()
 
+        # Object creation `DataTransection` class 
         self.data_trans = DataTransection(
             source_azure_conn_str=self.source_azure_conn_str,
             source_container_name=self.source_container_name,
@@ -37,10 +46,8 @@ class AdaptorFileProcess:
             target_azure_conn_str=self.target_azure_conn_str,
         )
 
+        # Object creation of `KafkaTransection` class 
         self.kafka_trans = KafkaTransection(boostrap_server=self.boostrap_server)
-
-        print(f"self.cloud_provider: {self.cloud_provider}")
-        print(f"self.source_azure_conn_str: {self.source_azure_conn_str}")
 
         self.logger.info("cloudProviderType : %s ", self.cloud_provider)
         self.logger.info("mapperTopicName : %s", self.target_kafka_topic)
@@ -50,56 +57,78 @@ class AdaptorFileProcess:
         self.logger.info("bootstrapServer : %s", self.boostrap_server)
         self.logger.info("mapperConnectionString : %s", self.target_azure_conn_str)
 
-    def compare_file(self, source_file_info, target_file_info):
-        file_name = self.data_trans.compare_file_and_ts(
-            source_file_info=source_file_info, target_file_info=target_file_info
-        )
-        return file_name
+    def read_source_file_info(self) -> list[str]:
+        """
+        Read the file name from the source blob storage
+        
+        Args:
+            None
 
-    def read_file_info(self):
-        source_file_info, target_file_info = self.data_trans.read_file_info(
-            cloud_vendor=self.cloud_provider
-        )
-        return source_file_info, target_file_info
+        Return:
+            list: List of file name from the blob storage
+        """
+        source_file_name = self.data_trans.source_file_info(cloud_provider = self.cloud_provider)
+        return source_file_name
 
-    def read_records(self, file_name):
-        self.data_trans.source_blob_name = file_name
-        self.data_trans.target_blob_name = file_name
-        data = self.data_trans.data_read(cloud_vendor=self.cloud_provider)
-        return data
+    def move_files(self, file: str) -> None:
+        """
+        Move the file from source blob storage to target blob storage
 
-    def write_records(self, data):
-        self.data_trans.write_data(cloud_vendor=self.cloud_provider, data=data)
+        Args:
+            file (string): file name to move
 
-    def send_to_kafka(self, file_name):
+        Return:
+            None 
+        """
+        self.data_trans.file_move(cloud_vendor = self.cloud_provider, file_name = file)
+
+    def send_to_kafka(self, file_name: str) -> None:
+        """
+        Send a Kafka message to the mapper kafka topic
+        
+        Args:
+            file_name (string): The file moved to the mapper container
+
+        Return:
+            None 
+        """
+        # Prepare a kafka message
         message = {
             "sourceType": self.cloud_provider,
             "storageContainer": self.target_container_name,
             "path": file_name,
         }
 
-        self.kafka_trans.send_message(
-            target_topic=self.target_kafka_topic, message=message
-        )
+        self.logger.info("Kafka message: %s", message)
+
+        # Sent a kafka message
+        # self.kafka_trans.send_message(
+        #     target_topic=self.target_kafka_topic, message=message
+        # )
 
 
 def main():
+    """
+    `main()` function to invoke the `AdaptorFileProcess` class
+
+    Args: 
+        None
+
+    Return:
+        None
+    """
     print("invoked")
     adaptor_file_process = AdaptorFileProcess()
-    source_file_info, target_file_info = adaptor_file_process.read_file_info()
-    process_files = adaptor_file_process.compare_file(
-        source_file_info=source_file_info, target_file_info=target_file_info
-    )
-    for file in process_files:
-        print("file")
-        print(file)
-        data = adaptor_file_process.read_records(file_name=file)
-        adaptor_file_process.write_records(data=data)
-        # adaptor_file_process.send_to_kafka(file_name = file)
+    source_files = adaptor_file_process.read_source_file_info()
+    for file in source_files:
+        print(f"======================{file}=====================")
+        adaptor_file_process.move_files(file = file)
+        adaptor_file_process.send_to_kafka(file_name = file)
 
-
+# Scheduler to invoke the `main()` function in given interval 
 interval = int(os.getenv("scheduleInterval"))
 schedule.every(interval).seconds.do(main)
 while True:
     schedule.run_pending()
     time.sleep(1)
+
