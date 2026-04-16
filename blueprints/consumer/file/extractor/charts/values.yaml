@@ -1,0 +1,25 @@
+namespace: ns-dpn-01
+name: producer-file-adaptor-eq
+configName: eqbd-adaptor-config
+cloudProviderType: azure
+consumerID: 12
+# env: dev
+acrName: ""
+imageName: producer-file-eq-adaptor
+imageTag: ""
+secretName: eqbd-adaptor-secrets
+bootstrapServer: kafka-src:9092
+storage_account_url: <<your specific value>>
+srcContainerName: eq-stage
+srcConnectionSecret: connection-string-secret
+mapperTopicName: dpn-producer-eq-raw
+mapperContainerName: eq-raw
+mapperConnectionSecret: connection-string-secret
+targetTopicName: 	dpn-producer-eq-target
+targetContainerName: eq-target
+targetConnectionSecret: connection-string-secret
+scheduleInterval: 60  # schedule interval in seconds
+
+source_name: blob-storage
+producer_name: eqbd-adaptor
+sourceFileName: EQBD.xml

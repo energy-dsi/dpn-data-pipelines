@@ -1,0 +1,61 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Values.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  backoffLimit: 5
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.name }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: {{ .Values.name }}
+          image: "{{ .Values.acrName }}.azurecr.io/dsi/{{ .Values.imageName }}:{{ .Values.imageTag }}"
+          imagePullPolicy: Always
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+            runAsUser: 10000
+            runAsNonRoot: true
+          command: ['python', 'main.py']
+          env:
+          - name: "scheduleInterval"
+            value: {{ .Values.scheduleInterval | quote }}
+          - name: "cloudProviderType"
+            value: {{ .Values.cloudProviderType }}
+          - name: "mapperTopicName"
+            value: {{ .Values.mapperTopicName }}
+          - name: "srcConnectionString"
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.srcConnectionSecret }}
+                key: SRC_CONNECTION_STRING
+          - name: "srcContainerName"
+            value: {{ .Values.srcContainerName }}
+          - name: "mapperContainerName"
+            value: {{ .Values.mapperContainerName }}
+          - name: "bootstrapServer"
+            value: {{ .Values.bootstrapServer }}
+          - name: "mapperConnectionString"
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.srcConnectionSecret }}
+                key: SRC_CONNECTION_STRING
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
