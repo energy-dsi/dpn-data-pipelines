@@ -1,0 +1,4 @@
+apiVersion: v2
+name: adaptor
+description: A Helm chart for the DSI Adaptor pipeline.
+version: 0.0.1
