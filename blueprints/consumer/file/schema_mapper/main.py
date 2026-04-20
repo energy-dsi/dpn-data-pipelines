@@ -177,7 +177,7 @@ def main():
     if file_name is not None:
         data = schema_mapper.read_records()
         is_valid = schema_mapper.schema_validation(data)
-        if is_valid == True:
+        if is_valid:
             schema_mapper.move_files(file=file_name)
             schema_mapper.send_to_kafka()
 
