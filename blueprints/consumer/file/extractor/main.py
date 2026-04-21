@@ -39,11 +39,10 @@ class ExtractorFileProcess:
 
         self.logger.info("cloudProviderType : %s ", self.cloud_provider)
         self.logger.info("mapperTopicName : %s", self.target_kafka_topic)
-        self.logger.info("srcConnectionString : %s", self.source_azure_conn_str)
+
         self.logger.info("srcContainerName : %s", self.source_container_name)
         self.logger.info("mapperContainerName : %s", self.target_container_name)
         self.logger.info("bootstrapServer : %s", self.boostrap_server)
-        self.logger.info("mapperConnectionString : %s", self.target_azure_conn_str)
 
     def read_source_file_info(self) -> list[str]:
         """

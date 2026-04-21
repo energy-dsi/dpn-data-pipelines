@@ -47,11 +47,10 @@ class SchemaMapper:
 
         self.logger.info("cloudProviderType : %s ", self.cloud_provider)
         self.logger.info("mapperTopicName : %s", self.target_kafka_topic)
-        self.logger.info("srcConnectionString : %s", self.source_azure_conn_str)
+
         self.logger.info("srcContainerName : %s", self.source_container_name)
         self.logger.info("mapperContainerName : %s", self.target_container_name)
         self.logger.info("bootstrapServer : %s", self.boostrap_server)
-        self.logger.info("mapperConnectionString : %s", self.target_azure_conn_str)
 
     def read_from_kafka_topic(self):
         """
@@ -178,7 +177,7 @@ def main():
     if file_name is not None:
         data = schema_mapper.read_records()
         is_valid = schema_mapper.schema_validation(data)
-        if is_valid == True:
+        if is_valid:
             schema_mapper.move_files(file=file_name)
             schema_mapper.send_to_kafka()
 
