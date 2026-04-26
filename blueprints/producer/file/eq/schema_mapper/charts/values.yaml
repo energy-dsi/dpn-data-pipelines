@@ -1,6 +1,6 @@
 namespace: <Namespace>
-name: producer-file-adaptor
-cloudProviderType: <Cloud Provider Type> 
+name: producer-file-mapper
+cloudProviderType: <Cloud Provider Type>
 acrName: <ACR Name>
 imageName: <Image name>
 imageTag: ""
