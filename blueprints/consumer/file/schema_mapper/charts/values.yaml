@@ -1,5 +1,5 @@
 namespace: <Namespace>
-name: consumer-file-extractor
+name: consumer-file-mapper
 cloudProviderType: <Cloud Provider Type>
 acrName: <ACR Name>
 imageName: <Image name>

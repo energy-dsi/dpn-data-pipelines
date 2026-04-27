@@ -1,18 +1,20 @@
-apiVersion: batch/v1
-kind: Job
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: {{ .Values.name }}
   namespace: {{ .Values.namespace }}
   labels:
     app: {{ .Values.name }}
 spec:
-  backoffLimit: 5
+  selector: 
+    matchLabels:
+      app: {{ .Values.name }}
   template:
     metadata:
       labels:
         app: {{ .Values.name }}
     spec:
-      restartPolicy: OnFailure
+      restartPolicy: Always
       containers:
         - name: {{ .Values.name }}
           image: "{{ .Values.acrName }}.azurecr.io/dsi/{{ .Values.imageName }}:{{ .Values.imageTag }}"
@@ -44,7 +46,7 @@ spec:
           - name: "srcConnectionString"
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.srcConnectionSecret }}
+                name: {{ .Values.storageConnectionSecret }}
                 key: SRC_CONNECTION_STRING
           - name: "srcContainerName"
             value: {{ .Values.srcContainerName }}
@@ -55,7 +57,6 @@ spec:
           - name: "mapperConnectionString"
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.srcConnectionSecret }}
-                key: SRC_CONNECTION_STRING
-      restartPolicy: OnFailure
+                name: {{ .Values.storageConnectionSecret }}
+                key: MAPPER_CONNECTION_STRING
       automountServiceAccountToken: false
