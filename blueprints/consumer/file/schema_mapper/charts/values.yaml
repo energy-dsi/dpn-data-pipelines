@@ -1,0 +1,16 @@
+namespace: <Namespace>
+name: consumer-file-mapper
+cloudProviderType: <Cloud Provider Type>
+acrName: <ACR Name>
+imageName: <Image name>
+imageTag: ""
+bootstrapServer: <Kafka bootstrap server:port> # kafka-target:9092
+srcContainerName: dp-consumer-stage
+storageConnectionSecret: <Src Storage Connection Secret Name> #consumer-file-dp-secret
+mapperTopicName: dpn-consumer-extr
+mapperContainerName: dp-consumer-trfm
+targetTopicName: dpn-consumer-target
+targetContainerName: dp-consumer-target
+scheduleInterval: 60  # schedule interval in seconds
+orgName: <Org Name>
+schemaType: <Schema Type> # eq/eqbd/dl/ssh
