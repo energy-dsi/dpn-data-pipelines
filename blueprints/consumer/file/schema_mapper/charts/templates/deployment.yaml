@@ -61,4 +61,18 @@ spec:
               secretKeyRef:
                 name: {{ .Values.mapperConnectionSecret }}
                 key: MAPPER_CONNECTION_STRING
+          - name: "AWS_ENDPOINT_URL"
+            value: {{ .Values.awsEndpointUrl }}
+          - name: "AWS_REGION"
+            value: {{ .Values.awsRegion }}
+          - name: "AWS_ACCESS_KEY_ID"
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.awsAccessSecret }}
+                key: AWS_ACCESS_KEY_ID
+          - name: "AWS_SECRET_ACCESS_KEY"
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.awsAccessSecret }}
+                key: AWS_SECRET_ACCESS_KEY
       automountServiceAccountToken: false

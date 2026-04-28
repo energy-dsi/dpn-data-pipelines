@@ -17,3 +17,7 @@ targetConnectionSecret: <Target Storage Connection Secret Name>
 scheduleInterval: 60  # schedule interval in seconds
 orgName: <Org Name>
 schemaType: <Schema Type>
+# ------- AWS Config ------------
+awsEndpointUrl: <AWS Endpoint URL>
+awsRegion: <AWS Region> # us-east-1
+awsAccessSecret: <AWS Access Secret Name> # aws-access-secret
