@@ -48,7 +48,7 @@ spec:
           - name: "targetConnectionString"
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.storageConnectionSecret }}
+                name: {{ .Values.targetConnectionSecret }}
                 key: TARGET_CONNECTION_STRING
           - name: "targetContainerName"
             value: {{ .Values.targetContainerName }}
@@ -59,6 +59,6 @@ spec:
           - name: "mapperConnectionString"
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.storageConnectionSecret }}
+                name: {{ .Values.mapperConnectionSecret }}
                 key: MAPPER_CONNECTION_STRING
       automountServiceAccountToken: false
