@@ -46,7 +46,7 @@ spec:
           - name: "srcConnectionString"
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.srcConnectionSecret }}
+                name: {{ .Values.storageConnectionSecret }}
                 key: SRC_CONNECTION_STRING
           - name: "srcContainerName"
             value: {{ .Values.srcContainerName }}
@@ -59,6 +59,20 @@ spec:
           - name: "mapperConnectionString"
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.mapperConnectionSecret }}
+                name: {{ .Values.storageConnectionSecret }}
                 key: MAPPER_CONNECTION_STRING
+          - name: "AWS_ENDPOINT_URL"
+            value: {{ .Values.awsEndpointUrl }}
+          - name: "AWS_REGION"
+            value: {{ .Values.awsRegion }}
+          - name: "AWS_ACCESS_KEY_ID"
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.awsAccessSecret }}
+                key: AWS_ACCESS_KEY_ID
+          - name: "AWS_SECRET_ACCESS_KEY"
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.awsAccessSecret }}
+                key: AWS_SECRET_ACCESS_KEY
       automountServiceAccountToken: false
