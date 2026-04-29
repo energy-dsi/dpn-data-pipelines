@@ -7,13 +7,11 @@ imageTag: ""
 productType: <Product Type>
 bootstrapServer: <Kafka bootstrap server:port> # kafka-src:9092
 srcContainerName: <productType-stage>
-srcConnectionSecret: <Src Storage Connection Secret Name>
+storageConnectionSecret: <Storage Connection Secret Name>
 mapperTopicName: dpn-producer-<productType>-raw
 mapperContainerName: <productType>-raw
-mapperConnectionSecret: <Mapper Storage Connection Secret Name>
 targetTopicName: dpn-producer-<productType>-target
 targetContainerName: <productType>-target
-targetConnectionSecret: <Target Storage Connection Secret Name>
 scheduleInterval: 60  # schedule interval in seconds
 orgName: <Org Name>
 schemaType: <Schema Type>

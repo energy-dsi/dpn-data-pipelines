@@ -46,7 +46,7 @@ spec:
           - name: "srcConnectionString"
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.srcConnectionSecret }}
+                name: {{ .Values.storageConnectionSecret }}
                 key: SRC_CONNECTION_STRING
           - name: "srcContainerName"
             value: {{ .Values.srcContainerName }}
@@ -59,7 +59,7 @@ spec:
           - name: "mapperConnectionString"
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.mapperConnectionSecret }}
+                name: {{ .Values.storageConnectionSecret }}
                 key: MAPPER_CONNECTION_STRING
           - name: "AWS_ENDPOINT_URL"
             value: {{ .Values.awsEndpointUrl }}

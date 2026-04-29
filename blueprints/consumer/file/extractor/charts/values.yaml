@@ -6,16 +6,12 @@ imageName: <Image name>
 imageTag: ""
 bootstrapServer: <Kafka bootstrap server:port> # kafka-target:9092
 srcContainerName: dp-consumer-stage
-srcConnectionSecret: <Src Storage Connection Secret Name> #consumer-file-dp-secret
+storageConnectionSecret: <Storage Connection Secret Name> #consumer-file-dp-secret
 mapperTopicName: dpn-consumer-extr
 mapperContainerName: dp-consumer-trfm
-mapperConnectionSecret: <Mapper Storage Connection Secret Name> #consumer-file-dp-secret
 targetTopicName: dpn-consumer-target
 targetContainerName: dp-consumer-target
-targetConnectionSecret: <Target Storage Connection Secret Name> #consumer-file-dp-secret
 scheduleInterval: 60  # schedule interval in seconds
-orgName: <Org Name>
-schemaType: <Schema Type> # eq/eqbd/dl/ssh
 # ------- AWS Config ------------
 awsEndpointUrl: <AWS Endpoint URL>
 awsRegion: <AWS Region> # us-east-1
