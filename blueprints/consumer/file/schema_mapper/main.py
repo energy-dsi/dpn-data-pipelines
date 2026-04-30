@@ -1,52 +1,122 @@
+# Copyright 2026 DSI Project
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# +---------+----------------------------------------------------------+---------------+-------------+
+# | Version | Description                                              | Change Owner  | Change Date |
+# +---------+----------------------------------------------------------+---------------+-------------+
+# | 1.0.0   | Initial version                                          | DSI Team      | 2026-05-01  |
+# +---------+----------------------------------------------------------+---------------+-------------+
+"""
+Consumer Schema Mapper.
+
+Reads file references from the mapper Kafka topic, validates each file,
+renames it using a date-partitioned path convention, moves it to the target
+storage tier, and publishes a downstream Kafka event.
+
+File placement:
+
+    Files are placed flat in the target container using the same object
+    key they arrived with.  No folder structure is applied.
+
+The original ``boostrap_server`` attribute spelling (one 't') is preserved.
+
+New environment variables (AWS / MinIO)
+---------------------------------------
+``AWS_ENDPOINT_URL``      – MinIO endpoint (empty → real AWS S3)
+``AWS_ACCESS_KEY_ID``     – access key
+``AWS_SECRET_ACCESS_KEY`` – secret key
+``AWS_REGION``            – AWS region (default ``us-east-1``)
+"""
+
+from __future__ import annotations
+
 import base64
-import json
 import os
-from datetime import datetime
+import time
+from typing import Any
 
 from azure.core.exceptions import AzureError, HttpResponseError
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 from google.api_core.exceptions import GoogleAPIError
-from kafka import KafkaConsumer
 
 from utils.data_transection import DataTransection
 from utils.exception_handler import HandleExceptions
 from utils.kafka_transection import KafkaTransection
-from utils.logging import Logging
+from utils.otel_logger import OtelLogger as Logging
+from utils.config_validator import validate_cloud_config, validate_kafka_config
 
 load_dotenv()
 
-
 class SchemaMapper:
     """
-    `SchemaMapper` class is used to validate the data using validation schema
+    Consumer-side schema mapper.
+
+    Validates and routes files from the mapper tier to the final target tier
+    using date-partitioned storage paths.
     """
 
-    def __init__(self):
-        """
-        Initializes the `SchemaMapper` instance
-        """
-        self.cloud_provider = os.getenv("cloudProviderType")
-        self.target_kafka_topic = os.getenv("targetTopicName")
-        self.source_kafka_topic = os.getenv("mapperTopicName")
-        self.source_azure_conn_str = base64.b64decode(
-            os.getenv("mapperConnectionString")
+    def __init__(self) -> None:
+        """Initialise from environment variables."""
+        # ── Existing instance variables (names unchanged, incl. typo) ─────
+        self.cloud_provider: str = os.getenv("cloudProviderType", "azure")
+        self.target_kafka_topic: str = os.getenv("targetTopicName", "")
+        self.source_kafka_topic: str = os.getenv("mapperTopicName", "")
+        self.source_azure_conn_str: str = base64.b64decode(
+            os.getenv("mapperConnectionString", "")
         ).decode("utf-8")
-        self.source_container_name = os.getenv("mapperContainerName")
-        self.target_container_name = os.getenv("targetContainerName")
-        self.bootstrap_server = os.getenv("bootstrapServer")
-        self.target_azure_conn_str = base64.b64decode(
-            os.getenv("targetConnectionString")
+        self.source_container_name: str = os.getenv("mapperContainerName", "")
+        self.target_container_name: str = os.getenv("targetContainerName", "")
+        self.boostrap_server: str = os.getenv("bootstrapServer", "")  
+        self.target_azure_conn_str: str = base64.b64decode(
+            os.getenv("targetConnectionString", "")
         ).decode("utf-8")
-        self.org_name = None
-        self.schema_type = None
-        self.file_name = None
-        self.original_file_name = None
+        self.org_name: str | None = None
+        self.schema_type: str | None = None
+        self.file_name: str | None = None
+        self.original_file_name: str | None = None
 
-        # logger object creation
+        # ── New AWS / MinIO variables ─────────────────────────────────────
+        self.aws_endpoint_url: str | None = os.getenv("AWS_ENDPOINT_URL") or None
+        self.aws_access_key_id: str | None = os.getenv("AWS_ACCESS_KEY_ID") or None
+        self.aws_secret_access_key: str | None = (
+            os.getenv("AWS_SECRET_ACCESS_KEY") or None
+        )
+        self.aws_region: str = os.getenv("AWS_REGION", "us-east-1")
+
+        # ── Logger ────────────────────────────────────────────────────────
         self.logger = Logging().create_logger()
 
-        # Object creation `DataTransection` class
+        # ── Validate Cloud Config ─────────────────────────────────────────
+        validate_cloud_config(
+            cloud_provider=self.cloud_provider,
+            azure_fields=["srcConnectionString", "mapperConnectionString"],
+            logger=self.logger,
+        )
+
+        # ── Validate Kafka Config ─────────────────────────────────────────
+        validate_kafka_config(logger=self.logger)
+
+        # ── Success Log ────────────────────────────────────
+        self.logger.info(
+            "Configuration validation successful",
+            extra={
+                "event.name": "config.validation.success",
+                "cloud.provider": self.cloud_provider,
+            },
+        )   
+        # ── DataTransection ───────────────────────────────────────────────
         self.data_trans = DataTransection(
             source_azure_conn_str=self.source_azure_conn_str,
             source_container_name=self.source_container_name,
@@ -54,206 +124,275 @@ class SchemaMapper:
             source_blob_name=None,
             target_blob_name=None,
             target_azure_conn_str=self.target_azure_conn_str,
+            aws_endpoint_url=self.aws_endpoint_url,
+            aws_access_key_id=self.aws_access_key_id,
+            aws_secret_access_key=self.aws_secret_access_key,
+            aws_region=self.aws_region,
+            logger=self.logger,
         )
 
-        # Object creation of `KafkaTransection` class
-        self.kafka_trans = KafkaTransection(bootstrap_server=self.bootstrap_server)
+        # ── KafkaTransection – accepts the typo spelling ──────────────────
+        self.kafka_trans = KafkaTransection(
+            boostrap_server=self.boostrap_server,
+            logger=self.logger,
+        )
 
-        log_lines = [
-            "------------- Consumer - Schema Mapper Config Information -------------",
-            f"cloudProviderType    : {self.cloud_provider}",
-            f"mapperTopicName      : {self.target_kafka_topic}",
-            f"srcContainerName     : {self.source_container_name}",
-            f"mapperContainerName  : {self.target_container_name}",
-            f"bootstrapServer      : {self.bootstrap_server}",
-        ]
+        self.logger.info(
+            "Consumer SchemaMapper initialised",
+            extra={
+                "cloudProviderType": self.cloud_provider,
+                "mapperTopicName": self.target_kafka_topic,
+                "srcContainerName": self.source_container_name,
+                "targetContainerName": self.target_container_name,
+                "tgtBootstrapServer": self.boostrap_server,
+            },
+        )
 
-        width = max(len(line) for line in log_lines) + 4
-        border = "+" + "-" * (width - 2) + "+"
-
-        self.logger.info(border)
-        for line in log_lines:
-            self.logger.info(f"| {line.ljust(width - 4)} |")
-        self.logger.info(border)
-
-        self.logger.info("Kafak listening at: %s", self.source_kafka_topic)
-
-    def read_records(self, file) -> str:
+    # -----------------------------------------------------------------------
+    def read_from_kafka_topic(self, file_name: str) -> str:
         """
-        Read the data from the source file from the source blob storage
+        Process a file reference received from Kafka.
 
-        Args:
-            None
+        Parses the standardised filename convention
+        ``<schema_type>-<org_name>-<original_name>`` to populate
+        :attr:`schema_type`, :attr:`org_name`, and :attr:`original_file_name`.
 
-        Return:
-            None
+        Parameters
+        ----------
+        file_name:
+            Object key / blob name from the Kafka payload.
+
+        Returns
+        -------
+        str
+            The original *file_name* unchanged.
         """
+        self.data_trans.source_blob_name = file_name
+        self.data_trans.target_blob_name = file_name
 
-        self.data_trans.source_blob_name = file
+        file_props = file_name.split("-")
+        if len(file_props) >= 3:
+            self.schema_type = file_props[0]
+            self.org_name = file_props[1]
+            self.original_file_name = file_props[2]
+        else:
+            self.logger.warning(
+                "File name does not match expected convention "
+                "<schema_type>-<org_name>-<filename>",
+                extra={"file_name": file_name},
+            )
 
-        log_lines = [
-            "------------- Consumer - Schema Mapper Config Information -------------",
-            f"cloudProviderType    : {self.cloud_provider}",
-            f"mapperTopicName      : {self.target_kafka_topic}",
-            f"srcContainerName     : {self.source_container_name}",
-            f"mapperContainerName  : {self.target_container_name}",
-            f"bootstrapServer      : {self.bootstrap_server}",
-        ]
+        self.logger.info(
+            "File name parsed",
+            extra={
+                "file_name": file_name,
+                "schema_type": self.schema_type,
+                "org_name": self.org_name,
+                "original_file_name": self.original_file_name,
+            },
+        )
+        return file_name
 
-        width = max(len(line) for line in log_lines) + 4
-        border = "+" + "-" * (width - 2) + "+"
+    def read_records(self) -> str:
+        """
+        Download the current ``source_blob_name`` from the mapper tier.
 
-        self.logger.info(border)
-        for line in log_lines:
-            self.logger.info(f"| {line.ljust(width - 4)} |")
-        self.logger.info(border)
-
-        file_props = file.split("-")
-
-        self.schema_type = file_props[0]
-        self.org_name = file_props[1]
-        self.original_file_name = file_props[2]
-
-        self.logger.info("file name properties: %s", file_props)
-        self.logger.info("schema_type: %s", self.schema_type)
-        self.logger.info("org_name: %s", self.org_name)
-        self.logger.info("original_file_name: %s", self.original_file_name)
-
-        # self.data_trans.target_blob_name=file
+        Returns
+        -------
+        str
+            UTF-8 file content.
+        """
         data = self.data_trans.data_read(cloud_vendor=self.cloud_provider)
-
         return data
 
     def schema_validation(self, data: str) -> bool:
         """
-        Validate the data with it's respective schema
+        Validate *data* against its product schema.
 
-        Args:
-            data (string): The data from the source file to validate
+        Parameters
+        ----------
+        data:
+            Raw file content.
 
-        Return:
-            Boolean: If the data is valid, It will return `True`, Otherwise `False`
+        Returns
+        -------
+        bool
+            ``True`` if valid.
+
+        .. note::
+            Stub implementation – full logic scheduled for PI3.
         """
-
-        # LOGIC NEEDS TO IMPLEMENT IN PI3
-        self.logger.info("LOGIC NEEDS TO IMPLEMENT IN PI3")
-
+        # TODO (PI3): implement per-schema validation
+        self.logger.info(
+            "Schema validation invoked (stub – PI3)",
+            extra={
+                "schema_type": self.schema_type,
+                "data_length": len(data) if data else 0,
+            },
+        )
         return True
 
-    def move_files(self, file: str) -> None:
+    def move_files(self, file: str) -> bool:
         """
-        Move the file from source blob storage to target blob storage
+        Move *file* from the mapper tier to the target container / bucket.
 
-        Args:
-            file (string): file name to move
+        The file is placed flat in the target container using the same
+        object key it arrived with – no folder structure or date partitioning
+        is applied.  The source object is deleted after a successful copy.
 
-        Return:
-            None
+        Parameters
+        ----------
+        file:
+            Source object key / blob name.
+
+        Returns
+        -------
+        bool
+            ``True`` on success.
         """
-
+        # Destination key is identical to source key – flat placement only.
         self.file_name = file
 
-        # File move process
-        is_moved = self.data_trans.file_move(
+        is_file_moved: bool = self.data_trans.file_move(
             cloud_vendor=self.cloud_provider,
             file_name=file,
             dest_file_name=self.file_name,
         )
+        self.logger.info(
+            "File moved to target container",
+            extra={
+                "source": file,
+                "destination": self.file_name,
+                "target_container": self.target_container_name,
+                "provider": self.cloud_provider,
+            },
+        )
+        return is_file_moved
 
-        return is_moved
-
-    def send_to_kafka(self, is_file_move) -> None:
+    def send_to_kafka(self) -> None:
         """
-        Send a Kafka message to the mapper kafka topic
+        Publish a file-ready event to the target Kafka topic.
 
-        Args:
-            None
-
-        Return:
-            None
+        Uses the renamed ``file_name`` populated by :meth:`move_files`.
         """
-        if is_file_move:
-            # Prepare a kafka message
-            message = {
-                "sourceType": self.cloud_provider,
-                "storageContainer": self.target_container_name,
-                "path": self.file_name,
-            }
-            # Sent a kafka message
-            self.kafka_trans.send_message(
-                target_topic=self.target_kafka_topic, message=message
-            )
-            self.logger.info(
-                "Message pushed into %s kafka topic", self.target_kafka_topic
-            )
-        else:
-            self.logger.info("Message not sent to Kafka: file movement failed")
+        message = {
+            "sourceType": "s3" if self.cloud_provider.lower() == "aws" else self.cloud_provider,
+            "storageContainer": self.target_container_name,
+            "path": self.file_name,
+        }
+        self.kafka_trans.send_message(
+            target_topic=self.target_kafka_topic, message=message
+        )
+        self.logger.info(
+            "Message pushed into Kafka topic",
+            extra={"topic": self.target_kafka_topic, "path": self.file_name},
+        )
 
 
-def main(schema_mapper, file):
+# ---------------------------------------------------------------------------
+# Per-message processing
+# ---------------------------------------------------------------------------
+def _process_message(
+    schema_mapper: "SchemaMapper",
+    except_handle: HandleExceptions,
+    payload: dict[str, Any],
+) -> None:
     """
-    `main()` function to invoke the `AdaptorFileProcess` class
+    Process a single Kafka message payload through the full mapper pipeline.
 
-    Args:
-        file (string): File name from the source blob storage
+    Called once per message by the consumer loop in :func:`start_consumer`.
+    Keeping this as a standalone function (not a nested closure) makes it
+    independently testable.
 
-    Return:
-        None
+    Parameters
+    ----------
+    schema_mapper:
+        Shared :class:`SchemaMapper` instance.
+    except_handle:
+        Shared :class:`HandleExceptions` instance.
+    payload:
+        Decoded JSON dict from the Kafka message.
     """
-    message = "Consumer - Schema Mapper Started"
-    border = "=" * (len(message) + 4)
-
-    print(border)
-    print(f"| {message} |")
-    print(border)
-
-    except_handle = HandleExceptions()
+    file_name: str = payload.get("path", "")
+    if not file_name:
+        schema_mapper.logger.warning(
+            "Payload missing 'path' – skipping",
+            extra={"payload": payload},
+        )
+        return
     try:
-        data = schema_mapper.read_records(file=file)
-        is_valid = schema_mapper.schema_validation(data)
-        if is_valid:
-            is_file_move = schema_mapper.move_files(file=file)
-            schema_mapper.send_to_kafka(is_file_move=is_file_move)
+        resolved = schema_mapper.read_from_kafka_topic(file_name)
+        if resolved:
+            data = schema_mapper.read_records()
+            is_valid = schema_mapper.schema_validation(data)
+            if is_valid:
+                is_moved = schema_mapper.move_files(file=resolved)
+                if is_moved:
+                    schema_mapper.send_to_kafka()
+                else:
+                    schema_mapper.logger.warning(
+                        "File move failed – Kafka event suppressed",
+                        extra={"file": resolved},
+                    )
+    except (HttpResponseError, AzureError) as exc:
+        except_handle.handle_storage_exception(exc, "Azure")
+    except (ClientError, BotoCoreError) as exc:
+        except_handle.handle_storage_exception(exc, "AWS S3")
+    except GoogleAPIError as exc:
+        except_handle.handle_storage_exception(exc, "GCP")
+    except Exception as exc:  # noqa: BLE001
+        except_handle.handle_storage_exception(exc, "")
 
-    except (HttpResponseError, AzureError) as e:
-        except_handle.handle_storage_exception(e, "Azure")
-    except (ClientError, BotoCoreError) as e:
-        except_handle.handle_storage_exception(e, "AWS S3")
-    except GoogleAPIError as e:
-        except_handle.handle_storage_exception(e, "GCP")
-    except Exception as e:
-        # Anything else (bugs, invalid args, unexpected errors)
-        except_handle.handle_storage_exception(e, "")
 
-    message = "Consumer - Schema Mapper Completed"
-    border = "=" * (len(message) + 4)
+def start_consumer(schema_mapper: "SchemaMapper") -> None:
+    """
+    Start the blocking Kafka consumer loop for the schema mapper.
 
-    print(border)
-    print(f"| {message} |")
-    print(border)
+    Invokes :func:`_process_message` for every message consumed from
+    ``source_kafka_topic``.  Blocks until a fatal Kafka error occurs
+    (the caller is responsible for retrying).
 
+    Parameters
+    ----------
+    schema_mapper:
+        Shared :class:`SchemaMapper` instance built once at startup.
+    """
+    _except_handle = HandleExceptions()
 
-def start_consumer(schema_mapper):
-    topic = os.getenv("mapperTopicName")
-    bootstrap_server = os.getenv("bootstrapServer")
+    def _handler(payload: dict[str, Any]) -> None:
+        _process_message(schema_mapper, _except_handle, payload)
 
-    # Read the message from Kafka Topic
-    consumer = KafkaConsumer(
-        topic,
-        bootstrap_servers=bootstrap_server,
-        auto_offset_reset="earliest",
-        enable_auto_commit=True,
-        group_id="producer_schema_mapper",
-        value_deserializer=lambda x: x.decode("utf-8"),
+    schema_mapper.kafka_trans.consume_messages(
+        source_topic=schema_mapper.source_kafka_topic,
+        group_id="consumer_schema_mapper",
+        handler=_handler,
     )
-
-    for message in consumer:
-        data = json.loads(message.value)
-        file_name = data["path"]
-        main(schema_mapper=schema_mapper, file=file_name)
 
 
 if __name__ == "__main__":  # pragma: no cover
-    # Code execution starting here
-    schema_mapper = SchemaMapper()
-    start_consumer(schema_mapper=schema_mapper)
+    # Consumer mapper is event-driven (Kafka), not schedule-driven.
+    # schedule / scheduleInterval are intentionally not used here.
+    # Build SchemaMapper once – reused for every consumed message.
+    _mapper = SchemaMapper()
+    _mapper.logger.info(
+        "Consumer mapper starting – listening for Kafka events",
+        extra={
+            "source_topic": _mapper.source_kafka_topic,
+            "target_topic": _mapper.target_kafka_topic,
+            "cloud_provider": _mapper.cloud_provider,
+        },
+    )
+
+    # start_consumer() blocks indefinitely inside consume_messages().
+    # Wrap in a retry loop so a broker restart does not kill the process.
+    _retry_delay = int(os.getenv("consumerRetryDelaySecs", "5"))
+    while True:
+        try:
+            start_consumer(schema_mapper=_mapper)
+        except Exception as _exc:  # noqa: BLE001
+            _mapper.logger.error(
+                "Consumer loop exited unexpectedly – retrying",
+                extra={"error": str(_exc), "retry_in_secs": _retry_delay},
+                exc_info=True,
+            )
+            time.sleep(_retry_delay)

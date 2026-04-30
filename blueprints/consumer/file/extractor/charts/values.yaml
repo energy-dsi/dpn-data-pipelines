@@ -1,18 +1,22 @@
-namespace: <Namespace>
+namespace: ns-dpn-01
 name: consumer-file-extractor
-cloudProviderType: <Cloud Provider Type>
-acrName: <ACR Name>
-imageName: <Image name>
+cloudProviderType: azure
+acrName: ""
+imageName: consumer-file-extractor
 imageTag: ""
-bootstrapServer: <Kafka bootstrap server:port> # kafka-target:9092
+bootstrapServer: kafka-target:9092
 srcContainerName: dp-consumer-stage
-storageConnectionSecret: <Storage Connection Secret Name> #consumer-file-dp-secret
+srcConnectionSecret: consumer-file-dp-secret
 mapperTopicName: dpn-consumer-extr
 mapperContainerName: dp-consumer-trfm
+mapperConnectionSecret: consumer-file-dp-secret
 targetTopicName: dpn-consumer-target
 targetContainerName: dp-consumer-target
+targetConnectionSecret: consumer-file-dp-secret
 scheduleInterval: 60  # schedule interval in seconds
+orgName: neso
+schemaType: eq
 # ------- AWS Config ------------
-awsEndpointUrl: <AWS Endpoint URL>
-awsRegion: <AWS Region> # us-east-1
-awsAccessSecret: <AWS Access Secret Name> # aws-access-secret
+awsEndpointUrl: "http://localhost:9000"
+awsRegion: us-east-1
+awsAccessSecret: aws-access-secret
