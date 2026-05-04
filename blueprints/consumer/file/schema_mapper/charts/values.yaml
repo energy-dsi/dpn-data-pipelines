@@ -4,7 +4,7 @@ cloudProviderType: azure
 acrName: ""
 imageName: consumer-file-mapper
 imageTag: ""
-bootstrapServer: kafka-target:9092
+bootstrapServer: dpn-kafka-target:9092
 srcContainerName: dp-consumer-stage
 srcConnectionSecret: consumer-file-dp-secret
 mapperTopicName: dpn-consumer-extr
