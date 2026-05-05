@@ -90,10 +90,15 @@ class AdaptorFileProcess:
 
         # ── New AWS / MinIO variables ─────────────────────────────────────
         self.aws_endpoint_url: str | None = os.getenv("AWS_ENDPOINT_URL") or None
-        self.aws_access_key_id: str | None = os.getenv("AWS_ACCESS_KEY_ID") or None
-        self.aws_secret_access_key: str | None = (
-            os.getenv("AWS_SECRET_ACCESS_KEY") or None
-        )
+
+        self.aws_access_key_id = base64.b64decode(
+            os.getenv("AWS_ACCESS_KEY_ID", "")
+        ).decode("utf-8")
+
+        self.aws_secret_access_key = base64.b64decode(
+            os.getenv("AWS_SECRET_ACCESS_KEY", "")
+        ).decode("utf-8")
+
         self.aws_region: str = os.getenv("AWS_REGION", "us-east-1")
 
         # ── Logger (OTel-compatible JSON) ─────────────────────────────────

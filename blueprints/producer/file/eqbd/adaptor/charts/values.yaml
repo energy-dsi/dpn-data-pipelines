@@ -1,21 +1,21 @@
-namespace: <Namespace>
+namespace: ns-dpn-01
 name: producer-file-adaptor
-cloudProviderType: <Cloud Provider Type> 
-acrName: <ACR Name>
-imageName: <Image name>
+cloudProviderType: azure
+acrName: ""
+imageName: producer-file-adaptor-eq
 imageTag: ""
-productType: <Product Type>
-bootstrapServer: <Kafka bootstrap server:port> # kafka-src:9092
-srcContainerName: <productType-stage>
-storageConnectionSecret: <Storage Connection Secret Name>
-mapperTopicName: dpn-producer-<productType>-raw
-mapperContainerName: <productType>-raw
-targetTopicName: dpn-producer-<productType>-target
-targetContainerName: <productType>-target
+productType: ""
+bootstrapServer: dpn-kafka-src:9092
+srcContainerName: bp-natural-gas-stage
+storageConnectionSecret: producer-file-dp-secret
+mapperTopicName: dpn-producer-bp-natural-gas-raw
+mapperContainerName: bp-natural-gas-raw
+targetTopicName: dpn-producer-bp-natural-gas-target
+targetContainerName: bp-natural-gas-target
 scheduleInterval: 60  # schedule interval in seconds
-orgName: <Org Name>
-schemaType: <Schema Type>
+orgName: BP
+schemaType: ""
 # ------- AWS Config ------------
-awsEndpointUrl: <AWS Endpoint URL>
-awsRegion: <AWS Region> # us-east-1
-awsAccessSecret: <AWS Access Secret Name> # aws-access-secret
+awsEndpointUrl: "<<your specific value>>"
+awsRegion: us-east-1
+awsAccessSecret: aws-access-secret

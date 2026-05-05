@@ -1,5 +1,5 @@
 ARG ACR_NAME
-FROM <<CONTAINER_REGISTRY_URL>>/alpine:3.22
+FROM ${ACR_NAME}.azurecr.io/alpine:3.22
  
 # Create non-root user
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
@@ -31,11 +31,11 @@ COPY --chown=root:root --chmod=755 setup.py .
  
 # Upgrade pip inside venv (this is safe)
 RUN pip install --no-cache-dir -r requirements.txt && pip install -e .
- 
+
 ARG PRODUCT_TYPE
 
 # Copy application code
-COPY --chown=root:root --chmod=755 producer/file/${PRODUCT_TYPE}/schema_mapper/main.py .
+COPY --chown=appuser:appgroup producer/file/${PRODUCT_TYPE}/schema_mapper/main.py .
 # COPY --chown=appuser:appgroup producer/file/eqbd/.env .
 
 CMD ["python", "main.py"]

@@ -17,7 +17,7 @@ spec:
       restartPolicy: Always
       containers:
         - name: {{ .Values.name }}
-          image: "{{ .Values.acrName }}.azurecr.io/dsi/{{ .Values.imageName }}:{{ .Values.imageTag }}"
+          image: "{{ .Values.acrName }}.azurecr.io/dsi/{{ .Values.imageName }}:{{ .Values.imageTag }}-{{.Values.productType}}"
           imagePullPolicy: Always
           resources:
             requests:
@@ -50,6 +50,13 @@ spec:
               secretKeyRef:
                 name: {{ .Values.storageConnectionSecret }}
                 key: TARGET_CONNECTION_STRING
+          - name: "srcConnectionString"
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.storageConnectionSecret }}
+                key: SRC_CONNECTION_STRING
+          - name: "srcContainerName"
+            value: {{ .Values.srcContainerName }}
           - name: "targetContainerName"
             value: {{ .Values.targetContainerName }}
           - name: "mapperContainerName"
