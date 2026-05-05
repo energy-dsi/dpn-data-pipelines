@@ -6,17 +6,13 @@ imageName: consumer-file-mapper
 imageTag: ""
 bootstrapServer: dpn-kafka-target:9092
 srcContainerName: dp-consumer-stage
-srcConnectionSecret: consumer-file-dp-secret
+storageConnectionSecret: consumer-file-dp-secret
 mapperTopicName: dpn-consumer-extr
 mapperContainerName: dp-consumer-trfm
-mapperConnectionSecret: consumer-file-dp-secret
 targetTopicName: dpn-consumer-target
 targetContainerName: dp-consumer-target
-targetConnectionSecret: consumer-file-dp-secret
 scheduleInterval: 60  # schedule interval in seconds
-orgName: neso
-schemaType: eq
 # ------- AWS Config ------------
-awsEndpointUrl: "http://localhost:9000"
+awsEndpointUrl: "<<your specific value>>"
 awsRegion: us-east-1
 awsAccessSecret: aws-access-secret
