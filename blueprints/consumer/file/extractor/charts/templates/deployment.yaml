@@ -59,6 +59,15 @@ spec:
               secretKeyRef:
                 name: {{ .Values.storageConnectionSecret }}
                 key: MAPPER_CONNECTION_STRING
+          - name: "targetConnectionString"
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.storageConnectionSecret }}
+                key: TARGET_CONNECTION_STRING
+          - name: "targetTopicName"
+            value: {{ .Values.targetTopicName }}
+          - name: "targetContainerName"
+            value: {{ .Values.targetContainerName }}
           - name: "AWS_ENDPOINT_URL"
             value: {{ .Values.awsEndpointUrl }}
           - name: "AWS_REGION"

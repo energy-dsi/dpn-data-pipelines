@@ -1,5 +1,5 @@
-# ARG ACR_NAME
-FROM <<CONTAINER_REGISTRY_URL>>/alpine:3.22
+ARG ACR_NAME
+FROM ${ACR_NAME}.azurecr.io/alpine:3.22
  
 # Create non-root user
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
