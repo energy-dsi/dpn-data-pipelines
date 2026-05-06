@@ -35,7 +35,7 @@ RUN pip install --no-cache-dir -r requirements.txt && pip install -e .
 ARG PRODUCT_TYPE
 
 # Copy application code
-COPY --chown=appuser:appgroup producer/file/${PRODUCT_TYPE}/schema_mapper/main.py .
-# COPY --chown=appuser:appgroup producer/file/eqbd/.env .
+COPY --chown=root:root --chmod=755 producer/file/${PRODUCT_TYPE}/schema_mapper/main.py .
+# COPY --chown=root:root --chmod=755 producer/file/eqbd/.env .
 
 CMD ["python", "main.py"]
