@@ -1,0 +1,25 @@
+namespace: ns-dpn-01
+name: producer-topic-schema-mapper
+acrName: ""
+imageName: producer-topic-schema-mapper
+imageTag: ""
+
+bootstrapServer: dpn-kafka-src:9092
+
+# Required – must match srcTopicName configured in the adaptor
+srcTopicName: dpn-producer-eq-sample-1-src
+
+# Leave blank to auto-derive:
+#   mapperTopicName  →  <srcTopicName>-trfm
+#   targetTopicName  →  <srcTopicName>-target
+mapperTopicName: ""
+targetTopicName: ""
+
+mapperGroupId: producer-topic-schema-mapper
+
+# Metadata stamped into every outgoing message header
+schemaType: eq
+orgName: neso
+fileExtensionType: xml
+
+consumerRetryDelaySecs: 5

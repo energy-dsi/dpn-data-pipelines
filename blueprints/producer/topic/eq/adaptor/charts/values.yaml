@@ -1,0 +1,16 @@
+namespace: ns-dpn-01
+name: producer-topic-adaptor
+acrName: ""
+imageName: producer-topic-adaptor
+imageTag: ""
+
+bootstrapServer: dpn-kafka-src:9092
+
+# Source topic – mandatory
+srcTopicName: dpn-producer-eq-sample-1-src
+
+# Leave blank to auto-derive as <srcTopicName>-trfm
+mapperTopicName: ""
+
+srcGroupId: producer-topic-adaptor
+consumerRetryDelaySecs: 5
