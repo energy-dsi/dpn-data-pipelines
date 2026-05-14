@@ -122,8 +122,10 @@ class TopicSchemaMapper:
             "trfm",
         )
 
+        target_topic_create = self.schema_type + "-" + self.org_name + "-" + self.product_type + "-target"
+
         self.target_topic = self.topic_resolver.resolve(
-            os.getenv("targetTopicName"),
+            target_topic_create,
             self.src_topic,
             "target",
         )
