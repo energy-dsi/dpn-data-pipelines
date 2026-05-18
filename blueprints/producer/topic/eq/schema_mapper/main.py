@@ -122,7 +122,7 @@ class TopicSchemaMapper:
             "trfm",
         )
 
-        target_topic_create = self.schema_type + "-" + self.org_name + "-" + self.product_type + "-target"
+        target_topic_create = "dpn-producer-"+self.schema_type + "-" + self.org_name + "-" + self.product_type + "-target"
 
         self.target_topic = self.topic_resolver.resolve(
             target_topic_create,
