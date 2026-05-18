@@ -12,6 +12,7 @@ mapperContainerName: dp-consumer-trfm
 targetTopicName: dpn-consumer-target
 targetContainerName: dp-consumer-target
 scheduleInterval: 60  # schedule interval in seconds
+imageRegistry: ghcr.io/energy-dsi
 # ------- AWS Config ------------
 awsEndpointUrl: "<<your specific value>>"
 awsRegion: us-east-1
