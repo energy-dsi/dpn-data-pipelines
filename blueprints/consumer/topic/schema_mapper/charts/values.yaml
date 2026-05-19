@@ -1,0 +1,35 @@
+namespace: ns-dpn-01
+name: consumer-topic-schema-mapper
+acrName: ""
+imageName: consumer-topic-schema-mapper
+imageTag: ""
+
+bootstrapServer: dpn-kafka-dest:9093
+
+# Must match srcTopicName configured in the extractor
+srcTopicName: dpn-consumer-delivery-src
+
+# Leave blank to auto-derive:
+#   mapperTopicName  →  <srcTopicName>-trfm
+#   targetTopicName  →  <srcTopicName>-target
+mapperTopicName: ""
+targetTopicName: ""
+
+mapperGroupId: consumer-topic-schema-mapper
+
+# Fallback values used when message headers are absent
+schemaType: eq
+orgName: neso
+fileExtensionType: xml
+
+# Target storage (terminal output)
+cloudProviderType: azure
+targetContainerName: dp-consumer-target
+storageConnectionSecret: consumer-topic-dp-secret
+
+# AWS Config (used when cloudProviderType=aws)
+awsEndpointUrl: "<<your specific value>>"
+awsRegion: us-east-1
+awsAccessSecret: aws-access-secret
+
+consumerRetryDelaySecs: 5
