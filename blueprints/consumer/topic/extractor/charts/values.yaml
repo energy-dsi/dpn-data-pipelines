@@ -1,0 +1,16 @@
+namespace: ns-dpn-01
+name: consumer-topic-extractor
+acrName: ""
+imageName: consumer-topic-extractor
+imageTag: ""
+
+bootstrapServer: dpn-kafka-target:9092
+
+# Topic the DPN Federator Gateway writes delivery notifications to
+srcTopicName: dpn-consumer-delivery-src
+
+# Leave blank to auto-derive as <srcTopicName>-trfm
+mapperTopicName: ""
+
+srcGroupId: consumer-topic-extractor
+consumerRetryDelaySecs: 5

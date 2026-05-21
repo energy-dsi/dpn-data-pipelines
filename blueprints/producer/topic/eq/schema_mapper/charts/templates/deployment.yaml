@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ .Values.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.name }}
+    spec:
+      restartPolicy: Always
+      containers:
+        - name: {{ .Values.name }}
+          image: "{{ .Values.acrName }}.azurecr.io/dsi/{{ .Values.imageName }}:{{ .Values.imageTag }}"
+          imagePullPolicy: Always
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+            runAsUser: 10000
+            runAsNonRoot: true
+          command: ['python', 'main.py']
+          env:
+          - name: "bootstrapServer"
+            value: {{ .Values.bootstrapServer }}
+          - name: "srcTopicName"
+            value: {{ .Values.srcTopicName }}
+          - name: "mapperTopicName"
+            value: {{ .Values.mapperTopicName | default "" | quote }}
+          - name: "targetTopicName"
+            value: {{ .Values.targetTopicName | default "" | quote }}
+          - name: "mapperGroupId"
+            value: {{ .Values.mapperGroupId }}
+          - name: "schemaType"
+            value: {{ .Values.schemaType }}
+          - name: "orgName"
+            value: {{ .Values.orgName }}
+          - name: "fileExtensionType"
+            value: {{ .Values.fileExtensionType }}
+          - name: "consumerRetryDelaySecs"
+            value: {{ .Values.consumerRetryDelaySecs | quote }}
+      automountServiceAccountToken: false
