@@ -6,7 +6,7 @@ imageName: producer-file-mapper-eq
 imageTag: ""
 productType: ""
 secretName: eqbd-adaptor-secrets
-bootstrapServer: dpn-kafka-src:9092
+bootstrapServer: kafka-src:9092
 srcContainerName: bp-natural-gas-stage
 storageConnectionSecret: producer-file-dp-secret
 mapperTopicName: dpn-producer-bp-natural-gas-raw

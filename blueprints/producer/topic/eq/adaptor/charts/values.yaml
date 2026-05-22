@@ -4,7 +4,7 @@ acrName: ""
 imageName: producer-topic-adaptor
 imageTag: ""
 
-bootstrapServer: dpn-kafka-src:9092
+bootstrapServer: kafka-src:9092
 
 # Source topic – mandatory
 srcTopicName: dpn-producer-eq-sample-1-src
