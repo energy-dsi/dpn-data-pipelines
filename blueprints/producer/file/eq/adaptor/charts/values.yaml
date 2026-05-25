@@ -5,7 +5,7 @@ acrName: ""
 imageName: producer-file-adaptor-eq
 imageTag: ""
 productType: ""
-bootstrapServer: kafka-src:9092
+bootstrapServer: dpn-kafka-src:9092
 srcContainerName: bp-natural-gas-stage
 storageConnectionSecret: producer-file-dp-secret
 mapperTopicName: dpn-producer-bp-natural-gas-raw

@@ -4,7 +4,7 @@ acrName: ""
 imageName: consumer-topic-schema-mapper
 imageTag: ""
 
-bootstrapServer: kafka-target:9092
+bootstrapServer: dpn-kafka-target:9092
 
 # Must match srcTopicName configured in the extractor
 srcTopicName: dpn-consumer-delivery-src
