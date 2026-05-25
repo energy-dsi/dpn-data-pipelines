@@ -7,7 +7,11 @@ imageTag: ""
 bootstrapServer: dpn-kafka-src:9092
 
 # Required – must match srcTopicName configured in the adaptor
+<<<<<<< HEAD
 srcTopicName: dpn-producer-eq-stage
+=======
+srcTopicName: dpn-producer-eq-sample-1-src
+>>>>>>> 64116fc5eaf0262977db8114b8f1dded39482460
 
 # Leave blank to auto-derive:
 #   mapperTopicName  →  <srcTopicName>-trfm

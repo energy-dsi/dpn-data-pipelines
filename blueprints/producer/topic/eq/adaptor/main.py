@@ -343,7 +343,7 @@ class TopicAdaptor:
             time.sleep(self.retry_delay)
 
 
-def main() -> None:
+def main() -> None: # pragma: no cover 
     """
     Application entry point.
 
