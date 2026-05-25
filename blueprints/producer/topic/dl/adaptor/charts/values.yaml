@@ -7,17 +7,17 @@ imageTag: ""
 bootstrapServer: kafka-src:9092
 
 # Source topic – mandatory
-srcTopicName: dpn-producer-eq-stage
+srcTopicName: dpn-producer-dl-stage
 
 # Leave blank to auto-derive as <srcTopicName>-trfm
-mapperTopicName: dpn-producer-eq-raw
+mapperTopicName: dpn-producer-dl-raw
 
 srcGroupId: producer-topic-adaptor
 consumerRetryDelaySecs: 5
 
 orgName: neso
-schemaType: eq
-productType: eq
+schemaType: dl
+productType: dl
 SERVICE_NAME: data-pipeline
 SERVICE_VERSION: 1.0.0
  
