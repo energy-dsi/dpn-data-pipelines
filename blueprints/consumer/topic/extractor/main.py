@@ -276,7 +276,7 @@ class TopicExtractor:
                 {
                     "bootstrap.servers": self.bootstrap_server,
                     "group.id": self.group_id,
-                    "auto.offset.reset": "latest",
+                    "auto.offset.reset": "earliest",
                     "enable.auto.commit": True,
                 }
             )
