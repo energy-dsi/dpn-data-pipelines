@@ -7,26 +7,22 @@ imageTag: ""
 bootstrapServer: dpn-kafka-src:9092
 
 # Required – must match srcTopicName configured in the adaptor
-<<<<<<< HEAD
-srcTopicName: dpn-producer-eq-stage
-=======
-srcTopicName: dpn-producer-eq-sample-1-src
->>>>>>> 64116fc5eaf0262977db8114b8f1dded39482460
+srcTopicName: dpn-producer-eqbd-stage
 
 # Leave blank to auto-derive:
 #   mapperTopicName  →  <srcTopicName>-trfm
 #   targetTopicName  →  <srcTopicName>-target
-mapperTopicName: dpn-producer-eq-raw
+mapperTopicName: dpn-producer-eqbd-raw
 # targetTopicName: ""
 
 mapperGroupId: producer-topic-schema-mapper
 
 # Metadata stamped into every outgoing message header
-schemaType: eq
+schemaType: eqbd
 orgName: neso
 
 consumerRetryDelaySecs: 5
 
-productType: eq
+productType: eqbd
 SERVICE_NAME: data-pipeline
 SERVICE_VERSION: 1.0.0
