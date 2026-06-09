@@ -1,15 +1,24 @@
+# Copyright DSI Project — Apache 2.0
+# v1.0.0 Initial | v1.1.0 Kafka trigger + StepLogger 2026-05-26
+
 """
-Topic Adaptor – Producer-side topic ingestion pathway.
+Kafka Topic Adaptor (Producer)
 
-This module defines a Kafka-based Topic Adaptor responsible for consuming
-messages from a source topic (`srcTopicName`) and forwarding them unchanged
-to a downstream mapper topic (`mapperTopicName`).
+This module implements a Kafka topic forwarder responsible for:
+- Consuming messages from a source Kafka topic
+- Forwarding them to a mapper (transformation) topic
 
-If `mapperTopicName` is not explicitly configured, it is derived automatically
-as `<srcTopicName>-trfm` and created on the Kafka broker if it does not exist.
+Deployment Notes:
+- Designed to run in Kubernetes with scheduler backend support
+- Uses environment variables for configuration
+- Supports Kafka-triggered and interval-based execution modes
 
-Typical topic flow:
-    srcTopicName  →  TopicAdaptor  →  mapperTopicName
+Example Runtime Config:
+    SCHEDULER_BACKEND=kafka-trigger
+    PRODUCT_NAME=eqbd-pg-gas
+
+File Location:
+    /home/claude/dpn-complete/producer/topic/eqbd-pg-gas/adaptor/main.py
 """
 
 from __future__ import annotations
@@ -17,219 +26,133 @@ from __future__ import annotations
 import os
 import time
 from datetime import UTC, datetime
-from typing import Optional
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 from dotenv import load_dotenv
 
 from utils.otel_logger import OtelLogger as Logging
-# from utils.topic_utils import ensure_exists, resolve
-
 from utils.topic_utils import TopicResolver, KafkaTopicManager
+from utils.pipeline_context import PipelineContext
+from utils.scheduler_backend import get_backend
+from utils.step_logger import StepLogger
 
-from utils.topic_config_validator import AdaptorConfigValidator
 
+# Load environment variables from .env file
 load_dotenv()
 
+# Task timeout (in seconds)
+_TIMEOUT = int(os.getenv("TOPIC_TASK_TIMEOUT_SECS", "600"))
 
-class TopicAdaptor:
+
+class TopicForwarder:
     """
-    Kafka Topic Adaptor (Producer Side).
+    Kafka Topic Forwarder.
 
-    This class encapsulates the full lifecycle of a Kafka topic adaptor:
-    - Reads configuration from environment variables
-    - Ensures downstream topic existence
-    - Subscribes to a source topic
-    - Forwards messages to a mapper topic
-    - Handles retries and logging in a resilient loop
+    Responsible for:
+    - Subscribing to a source Kafka topic
+    - Forwarding messages to a mapper topic
+    - Handling retries, logging, and delivery status
 
-    The adaptor is designed to be safe to restart and idempotent with respect
-    to topic creation.
+    Attributes:
+        bootstrap (str): Kafka bootstrap server
+        src_topic (str): Source Kafka topic
+        mapper_topic (str): Destination (mapper) topic
+        group_id (str): Consumer group ID
+        retry_delay (int): Delay between retries (seconds)
     """
 
-    SERVICE_NAME = "producer-topic-adaptor"
+    SERVICE_NAME = "producer-topic-eqbd-pg-gas-adaptor"
 
     def __init__(self) -> None:
-        """
-        Initialize the TopicAdaptor.
-
-        Responsibilities:
-        - Load environment configuration
-        - Resolve mapper topic name
-        - Ensure mapper topic exists
-        - Initialize Kafka producer
-        - Initialize structured logger
-        """
+        """Initialize Kafka producer, topics, and configuration."""
         self.logger = Logging().create_logger()
 
-        self.topic_resolver = TopicResolver()
+        # Kafka configuration from environment
+        self.bootstrap = os.getenv("bootstrapServer", "")
+        self.src_topic = os.getenv("srcTopicName", "")
+        self.group_id = os.getenv("srcGroupId", self.SERVICE_NAME)
+        self.retry_delay = int(os.getenv("consumerRetryDelaySecs", "5"))
 
-        self.bootstrap_server: str = os.getenv("bootstrapServer", "")
-        self.src_topic: str = os.getenv("srcTopicName", "")
-        self.group_id: str = os.getenv(
-            "srcGroupId", self.SERVICE_NAME
-        )
-        self.retry_delay: int = int(
-            os.getenv("consumerRetryDelaySecs", "5")
-        )
-
-        self.mapper_topic: str = self.topic_resolver.resolve(
+        # Resolve mapper topic dynamically
+        topic_resolver = TopicResolver()
+        self.mapper_topic = topic_resolver.resolve(
             os.getenv("mapperTopicName"),
             self.src_topic,
             "trfm",
         )
 
-        self.kafka_topic_manager = KafkaTopicManager(bootstrap_server = self.bootstrap_server, logger = self.logger)
-
-        self.kafka_topic_manager.ensure_exists(
-            topic_name = self.mapper_topic,
+        # Ensure target topic exists
+        topic_manager = KafkaTopicManager(
+            bootstrap_server=self.bootstrap,
+            logger=self.logger,
         )
+        topic_manager.ensure_exists(self.mapper_topic)
 
-        self.producer = Producer(
-            {"bootstrap.servers": self.bootstrap_server}
-        )
+        # Initialize Kafka producer
+        self.producer = Producer({"bootstrap.servers": self.bootstrap})
 
-    # ──────────────────────────────────────────────
-    # Startup / Configuration Logging
-    # ──────────────────────────────────────────────
-
-    def log_startup_banner(self) -> None:
-        """
-        Log a formatted startup banner with configuration details.
-
-        This provides visibility into runtime configuration and is helpful
-        for diagnostics during startup and deployments.
-        """
-        lines = [
-            "---------- Producer - Topic Adaptor Config Information ----------",
-            f"srcTopicName    : {self.src_topic}",
-            f"mapperTopicName : {self.mapper_topic}",
-            f"bootstrapServer : {self.bootstrap_server}",
-            f"srcGroupId      : {self.group_id}",
-        ]
-
-        width = max(len(l) for l in lines) + 4
-        border = "+" + "-" * (width - 2) + "+"
-
-        self.logger.info(border)
-        for line in lines:
-            self.logger.info(f"| {line.ljust(width - 4)} |")
-        self.logger.info(border)
-
-    # ──────────────────────────────────────────────
-    # Kafka Callbacks
-    # ──────────────────────────────────────────────
-
-    def _on_delivery(self, err, msg) -> None:
-        """
-        Kafka producer delivery callback.
-
-        Called asynchronously by the Kafka producer after a message
-        is either successfully delivered or permanently failed.
-
-        Parameters
-        ----------
-        err:
-            Delivery error (None on success).
-        msg:
-            The Kafka message that was produced.
-        """
-        if err:
-            self.logger.error(
-                "Kafka message delivery failed",
-                extra={
-                    "event.name": "message.delivery.failed",
-                    "service.name": self.SERVICE_NAME,
-                    "messaging.system": "kafka",
-                    "error.message": str(err),
-                },
-            )
-        else:
-            self.logger.info(
-                "Kafka message delivered",
-                extra={
-                    "event.name": "message.delivery.completed",
-                    "service.name": self.SERVICE_NAME,
-                    "messaging.system": "kafka",
-                    "messaging.destination.name": msg.topic(),
-                    "messaging.kafka.partition": msg.partition(),
-                    "messaging.kafka.message.offset": msg.offset(),
-                },
-            )
-
-    # ──────────────────────────────────────────────
-    # Consumer Setup
-    # ──────────────────────────────────────────────
-
-    def _create_consumer(self) -> Consumer:
-        """
-        Create and configure a Kafka consumer instance.
-
-        Returns
-        -------
-        Consumer
-            A subscribed Kafka consumer ready to poll messages.
-        """
-        consumer = Consumer(
-            {
-                "bootstrap.servers": self.bootstrap_server,
-                "group.id": self.group_id,
-                "auto.offset.reset": "latest",
-                "enable.auto.commit": True,
-            }
-        )
-
-        consumer.subscribe([self.src_topic])
-
+        # Log initialization
         self.logger.info(
-            "Subscribed to source topic",
+            "Adaptor initialised",
             extra={
-                "event.name": "consumer.subscribed",
-                "service.name": self.SERVICE_NAME,
-                "messaging.system": "kafka",
-                "messaging.destination.name": self.src_topic,
+                "srcTopicName": self.src_topic,
+                "mapperTopicName": self.mapper_topic,
             },
         )
 
-        return consumer
+        # Runtime debug configuration (console print)
+        print(
+            "\n--------------------------------------------"
+            " adaptor runtime config "
+            "--------------------------------------------"
+        )
+        print(
+            "bootstrapServer:", self.bootstrap,
+            "srcTopicName:", self.src_topic,
+            "mapperTopicName:", self.mapper_topic,
+            "srcGroupId:", self.group_id,
+            "PRODUCT_NAME:", os.getenv("PRODUCT_NAME"),
+            "SCHEDULER_BACKEND:", os.getenv("SCHEDULER_BACKEND"),
+            "TOPIC_TASK_TIMEOUT_SECS:", os.getenv("TOPIC_TASK_TIMEOUT_SECS"),
+        )
 
-    # ──────────────────────────────────────────────
-    # Message Processing
-    # ──────────────────────────────────────────────
-
-    def _process_message(self, msg) -> None:
+    def _on_delivery(self, err, msg) -> None:
         """
-        Process a single Kafka message.
+        Kafka delivery callback.
 
-        The message is forwarded unchanged from the source topic
-        to the mapper topic, with detailed latency and lifecycle
-        logging for observability.
-
-        Parameters
-        ----------
-        msg:
-            Kafka message consumed from the source topic.
+        Args:
+            err: Delivery error (if any)
+            msg: Kafka message
         """
-        process_start_utc = datetime.now(UTC)
+        if err:
+            self.logger.error(
+                "Delivery failed",
+                extra={"error": str(err)},
+            )
 
-        self.logger.info(
-            "Message processing started",
+    def _forward(self, msg, ctx: PipelineContext, step_log: StepLogger) -> None:
+        """
+        Forward a single Kafka message to mapper topic.
+
+        Args:
+            msg: Kafka message
+            ctx (PipelineContext): Pipeline execution context
+            step_log (StepLogger): Step-level logger
+        """
+        operation = "forward"
+        start_time = datetime.now(UTC)
+
+        step_log.step_start(
+            ctx,
+            operation,
             extra={
-                "event.name": "message.processing.started",
-                "service.name": self.SERVICE_NAME,
-                "messaging.system": "kafka",
-                "messaging.operation": "consume",
-                "messaging.destination.name": self.src_topic,
-                "messaging.kafka.partition": msg.partition(),
-                "messaging.kafka.message.offset": msg.offset(),
-                "message.size.bytes": (
-                    len(msg.value()) if msg.value() else 0
-                ),
-                "process.start.time": process_start_utc.isoformat(),
+                "partition": msg.partition(),
+                "offset": msg.offset(),
             },
         )
 
         try:
+            # Produce message to mapper topic
             self.producer.produce(
                 topic=self.mapper_topic,
                 value=msg.value(),
@@ -238,68 +161,63 @@ class TopicAdaptor:
                 callback=self._on_delivery,
             )
 
+            # Trigger delivery callbacks
             self.producer.poll(0)
 
-            process_end_utc = datetime.now(UTC)
+            # Compute processing time
+            duration_ms = int(
+                (datetime.now(UTC) - start_time).total_seconds() * 1000
+            )
 
-            self.logger.info(
-                "Message processing completed",
+            step_log.step_end(
+                ctx,
+                operation,
                 extra={
-                    "event.name": "message.processing.completed",
-                    "service.name": self.SERVICE_NAME,
-                    "messaging.system": "kafka",
-                    "messaging.operation": "forward",
-                    "messaging.destination.name": self.mapper_topic,
-                    "process.start.time": process_start_utc.isoformat(),
-                    "process.end.time": process_end_utc.isoformat(),
-                    "process.duration.ms": int(
-                        (process_end_utc - process_start_utc)
-                        .total_seconds()
-                        * 1000
-                    ),
+                    "dst": self.mapper_topic,
+                    "duration_ms": duration_ms,
                 },
             )
 
-        except Exception as exc:  # noqa: BLE001
-            process_end_utc = datetime.now(UTC)
+        except Exception as exc:
+            step_log.step_failed(ctx, operation, exc=exc)
+            raise
 
-            self.logger.error(
-                "Message processing failed",
-                extra={
-                    "event.name": "message.processing.failed",
-                    "service.name": self.SERVICE_NAME,
-                    "messaging.system": "kafka",
-                    "process.start.time": process_start_utc.isoformat(),
-                    "process.end.time": process_end_utc.isoformat(),
-                    "error.message": str(exc),
-                },
-                exc_info=True,
-            )
-
-    # ──────────────────────────────────────────────
-    # Main Run Loop
-    # ──────────────────────────────────────────────
-
-    def run(self) -> None:
+    def run_window(
+        self,
+        ctx: PipelineContext,
+        step_log: StepLogger,
+        stop_after: int | None = None,
+    ) -> None:
         """
-        Run the Topic Adaptor.
+        Run message processing loop for a specified duration.
 
-        This method contains a resilient infinite loop that:
-        - Creates a consumer
-        - Polls messages
-        - Forwards messages
-        - Handles Kafka and unexpected errors
-        - Retries after failures with a configurable delay
+        Args:
+            ctx (PipelineContext): Pipeline execution context
+            step_log (StepLogger): Step logger
+            stop_after (int | None): Stop execution after given seconds
         """
-        self.log_startup_banner()
+        deadline = time.monotonic() + stop_after if stop_after else None
 
         while True:
-            consumer: Optional[Consumer] = None
+            if deadline and time.monotonic() >= deadline:
+                break
+
+            consumer = Consumer(
+                {
+                    "bootstrap.servers": self.bootstrap,
+                    "group.id": self.group_id,
+                    "auto.offset.reset": "earliest",
+                    "enable.auto.commit": True,
+                }
+            )
+
+            consumer.subscribe([self.src_topic])
 
             try:
-                consumer = self._create_consumer()
-
                 while True:
+                    if deadline and time.monotonic() >= deadline:
+                        break
+
                     msg = consumer.poll(timeout=1.0)
 
                     if msg is None:
@@ -310,48 +228,83 @@ class TopicAdaptor:
                             continue
                         raise KafkaException(msg.error())
 
-                    self._process_message(msg)
+                    # Forward message
+                    self._forward(msg, ctx, step_log)
 
             except KafkaException as exc:
                 self.logger.error(
-                    "Kafka error – retrying",
-                    extra={
-                        "event.name": "kafka.retry",
-                        "service.name": self.SERVICE_NAME,
-                        "error.message": str(exc),
-                        "retry.delay.seconds": self.retry_delay,
-                    },
+                    "Kafka error",
+                    extra={"error": str(exc), "retry": self.retry_delay},
                 )
 
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 self.logger.error(
-                    "Unexpected error – retrying",
-                    extra={
-                        "event.name": "unexpected.retry",
-                        "service.name": self.SERVICE_NAME,
-                        "error.message": str(exc),
-                        "retry.delay.seconds": self.retry_delay,
-                    },
+                    "Unexpected error",
+                    extra={"error": str(exc)},
                     exc_info=True,
                 )
 
             finally:
+                # Ensure resources are flushed and closed
                 self.producer.flush()
-                if consumer:
-                    consumer.close()
+                consumer.close()
+
+            if deadline and time.monotonic() >= deadline:
+                break
 
             time.sleep(self.retry_delay)
 
 
-def main() -> None:
+def run(ctx: PipelineContext) -> None:
     """
-    Application entry point.
+    Entry point for pipeline execution.
 
-    Instantiates and runs the TopicAdaptor.
+    Args:
+        ctx (PipelineContext): Execution context
     """
-    AdaptorConfigValidator().validate_all()
-    TopicAdaptor().run()
+    forwarder = TopicForwarder()
+    step_log = StepLogger(forwarder.logger)
+
+    # Log pipeline start banner
+    step_log.pipeline_banner(
+        ctx,
+        service_name="producer-topic-eqbd-pg-gas-adaptor",
+        config_summary={
+            "srcTopicName": forwarder.src_topic,
+            "mapperTopicName": forwarder.mapper_topic,
+            "SCHEDULER_BACKEND": os.getenv("SCHEDULER_BACKEND", "standalone"),
+            "PRODUCT_NAME": os.getenv("PRODUCT_NAME", "eqbd-pg-gas"),
+        },
+    )
+
+    operation = "adaptor_window"
+    step_log.step_start(ctx, operation)
+
+    # Determine timeout based on trigger type
+    timeout = (
+        _TIMEOUT
+        if ctx.triggered_by in ["kafka-trigger", "interval"]
+        else None
+    )
+
+    try:
+        forwarder.run_window(ctx, step_log, stop_after=timeout)
+        step_log.step_end(ctx, operation)
+
+    except Exception as exc:
+        step_log.step_failed(ctx, operation, exc=exc)
+        raise
 
 
-if __name__ == "__main__":  # pragma: no cover
-    main()
+if __name__ == "__main__":
+    """
+    Script entry point.
+
+    Executes the adaptor using configured scheduler backend.
+    """
+    get_backend({"task_id": "trigger_adaptor"}).execute(
+        run,
+        pipeline_stage="adaptor",
+        pipeline_type="topic",
+        pipeline_role="producer",
+    )

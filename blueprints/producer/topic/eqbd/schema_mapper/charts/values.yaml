@@ -1,28 +1,78 @@
-namespace: ns-dpn-01
-name: producer-topic-schema-mapper
-acrName: ""
-imageName: producer-topic-schema-mapper
-imageTag: ""
+# ============================================================
+# Deployment Identity
+# ============================================================
+namespace: ns-dpn-01        # Kubernetes namespace for deployment
+name: producer-topic-adaptor   # Initial service name (overwritten below if duplicated)
 
-bootstrapServer: dpn-kafka-src:9092
+acrName: ""                 # Azure Container Registry name (empty = not used)
+imageName: producer-topic-adaptor   # Initial container image name
+imageTag: ""               # Image tag (empty = latest/default)
 
-# Required – must match srcTopicName configured in the adaptor
-srcTopicName: dpn-producer-eqbd-stage
 
-# Leave blank to auto-derive:
-#   mapperTopicName  →  <srcTopicName>-trfm
-#   targetTopicName  →  <srcTopicName>-target
-mapperTopicName: dpn-producer-eqbd-raw
-# targetTopicName: ""
+# ============================================================
+# Kafka Configuration (Source Cluster)
+# ============================================================
+bootstrapServer: dpn-kafka-src:9092   # Kafka broker endpoint
 
-mapperGroupId: producer-topic-schema-mapper
+mapperTopicName: dpn-producer-eqbd-pg-gas-raw   # Topic for raw incoming data
+srcTopicName: dpn-producer-eqbd-pg-gas-stage    # Source topic consumed by adaptor
+srcGroupId: producer_topic_eqbd_pg_gas_test     # Consumer group ID
 
-# Metadata stamped into every outgoing message header
-schemaType: eqbd
-orgName: neso
+
+# ============================================================
+# Schema Mapping Metadata
+# ============================================================
+orgName: pg              # Organization identifier
+schemaType: eqbd         # Schema type
+productType: eqbd-pg-gas # Product type
+
+
+# ============================================================
+# ⚠️ Duplicate Key Section (Overrides Above Values)
+# These values will override earlier ones if used by Helm/K8s
+# ============================================================
+namespace: ns-dpn-01     # Final namespace (same as above)
+name: dpn-producer-topic-eq-neso-oil-adaptor   # Final service name
+imageName: producer-topic-eq-neso-oil-adaptor  # Final image name
+
+
+# ============================================================
+# Pipeline Configuration
+# ============================================================
+PRODUCT_NAME: eqbd-pg-gas   # Logical product label
+
+SCHEDULER_BACKEND: kafka-trigger   # Execution backend (kafka-trigger / airflow / interval / standalone)
+EXECUTION_MODE: manual             # Execution mode (manual disables automatic runs)
+
+scheduleInterval: 240    # Polling interval (used only for interval scheduler)
+replicaCount: 1          # Number of pod replicas
+
+
+# ============================================================
+# Kafka Control Topics
+# ============================================================
+PIPELINE_CONTROL_TOPIC: dpn-pipeline-control   # Topic to trigger pipeline execution
+PIPELINE_STATUS_TOPIC: dpn-pipeline-status     # Topic to send pipeline status updates
+
+
+# ============================================================
+# Runtime Configuration
+# ============================================================
+DRAIN_IDLE_SECS: 15         # Idle time before stopping consumption
+TOPIC_TASK_TIMEOUT_SECS: 60 # Max runtime per execution
+
+
+# ============================================================
+# Monitoring Configuration
+# ============================================================
+statsdPort: 8125    # StatsD metrics port
+
+
+# ============================================================
+# OpenTelemetry (Tracing & Metrics)
+# ============================================================
+SERVICE_NAME: data-pipeline          # Service name for observability
+SERVICE_VERSION: 1.0.0               # Service version
+OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317  # OTEL collector endpoint
 
 consumerRetryDelaySecs: 5
-
-productType: eqbd
-SERVICE_NAME: data-pipeline
-SERVICE_VERSION: 1.0.0
