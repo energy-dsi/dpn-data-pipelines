@@ -7,15 +7,23 @@ imageTag: ""
 productType: ""
 secretName: eqbd-adaptor-secrets
 bootstrapServer: dpn-kafka-src:9092
-srcContainerName: bp-natural-gas-stage
+srcContainerName: eq-stage
 storageConnectionSecret: producer-file-dp-secret
-mapperTopicName: dpn-producer-bp-natural-gas-raw
-mapperContainerName: bp-natural-gas-raw
-targetTopicName: dpn-producer-bp-natural-gas-target
-targetContainerName: bp-natural-gas-target
+mapperTopicName: dpn-producer-eq-raw
+mapperContainerName: eq-raw
+targetTopicName: dpn-producer-eq-target
+targetContainerName: eq-target
 scheduleInterval: 60  # schedule interval in seconds
-orgName: BP
+orgName: EQ
 schemaType: ""
+
+SCHEDULER_BACKEND : kafka-trigger
+EXECUTION_MODE: manual
+PRODUCT_NAME: eq
+PIPELINE_CONTROL_TOPIC: dpn-pipeline-control
+PIPELINE_STATUS_TOPIC: dpn-pipeline-status
+STATSD_HOST: ''
+STATSD_PORT : 8125
 # ------- AWS Config ------------
 awsEndpointUrl: "<<your specific value>>"
 awsRegion: us-east-1

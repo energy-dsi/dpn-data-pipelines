@@ -14,17 +14,17 @@ imageTag: ""               # Image tag (empty = latest/default)
 # ============================================================
 bootstrapServer: dpn-kafka-src:9092   # Kafka broker endpoint
 
-mapperTopicName: dpn-producer-eqbd-raw   # Topic for raw incoming data
-srcTopicName: dpn-producer-eqbd-stage    # Source topic consumed by adaptor
-srcGroupId: producer_topic_eqbd     # Consumer group ID
+mapperTopicName: dpn-producer-dl-raw   # Topic for raw incoming data
+srcTopicName: dpn-producer-dl-stage    # Source topic consumed by adaptor
+srcGroupId: producer_topic_dl     # Consumer group ID
 
 
 # ============================================================
 # Schema Mapping Metadata
 # ============================================================
 orgName: pg              # Organization identifier
-schemaType: eqbd         # Schema type
-productType: eqbd # Product type
+schemaType: dl         # Schema type
+productType: dl # Product type
 
 
 # ============================================================
@@ -32,14 +32,14 @@ productType: eqbd # Product type
 # These values will override earlier ones if used by Helm/K8s
 # ============================================================
 namespace: ns-dpn-01     # Final namespace (same as above)
-name: dpn-producer-topic-eq-neso-oil-adaptor   # Final service name
-imageName: producer-topic-eq-neso-oil-adaptor  # Final image name
+name: dpn-producer-topic-dl-adaptor   # Final service name
+imageName: producer-topic-dl-adaptor  # Final image name
 
 
 # ============================================================
 # Pipeline Configuration
 # ============================================================
-PRODUCT_NAME: eqbd   # Logical product label
+PRODUCT_NAME: dl   # Logical product label
 
 SCHEDULER_BACKEND: kafka-trigger   # Execution backend (kafka-trigger / airflow / interval / standalone)
 EXECUTION_MODE: manual             # Execution mode (manual disables automatic runs)

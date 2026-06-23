@@ -209,10 +209,11 @@ class TopicSchemaMapper:
 
             # Enrich metadata headers
             enriched_headers = [
-                ("schema_type", self.schema_type.encode()),
-                ("org_name", self.org_name.encode()),
-                ("product_type", self.product_type.encode()),
-                ("processed_at", datetime.now(UTC).isoformat().encode()),
+                ("schemaType", self.schema_type.encode()),
+                ("orgName", self.org_name.encode()),
+                ("productType", self.product_type.encode()),
+                ("processedAt", datetime.now(UTC).isoformat().encode()),
+                ("offset",str(msg.offset())),
             ]
 
             # Produce message

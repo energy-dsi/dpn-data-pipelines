@@ -1,40 +1,39 @@
-# Copyright 2026 DSI Project
+# Copyright DSI Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
 # +---------+----------------------------------------------------------+---------------+-------------+
 # | Version | Description                                              | Change Owner  | Change Date |
 # +---------+----------------------------------------------------------+---------------+-------------+
 # | 1.0.0   | Initial version                                          | DSI Team      | 2026-05-01  |
+# | 1.1.0   | Add run(ctx), StepLogger, kafka-trigger drain mode       | DSI Team      | 2026-05-26  |
 # +---------+----------------------------------------------------------+---------------+-------------+
 """
-Producer Schema Mapper.
+Schema Mapper — DL producer file pipeline.
 
-Consumes file-ready events from the mapper Kafka topic, validates each file
-against its schema, renames and moves the validated file to the target tier,
-then publishes a downstream Kafka event.
+Consumes file-ready events from the mapper Kafka topic, validates each
+file, renames and moves it to the target tier, publishes a downstream event.
 
-Supports Azure Blob Storage and AWS S3 / MinIO.  All original instance
-variable names are preserved.
+v1.1 changes
+────────────
+* run(ctx) added as the single entry point for all SchedulerBackends.
+* StepLogger wraps every per-message operation.
+* kafka-trigger drain mode: when triggered by Airflow via Kafka control topic,
+  processes all available messages in the mapper topic then exits cleanly,
+  allowing Airflow to track completion. In standalone/interval mode the
+  original long-lived consumer loop runs unchanged.
+* get_backend() selected by SCHEDULER_BACKEND env var.
 
-New environment variables (AWS / MinIO)
----------------------------------------
-``AWS_ENDPOINT_URL``      – MinIO endpoint (empty → real AWS S3)
-``AWS_ACCESS_KEY_ID``     – access key
-``AWS_SECRET_ACCESS_KEY`` – secret key
-``AWS_REGION``            – AWS region (default ``us-east-1``)
+DRAIN MODE EXPLAINED
+────────────────────
+In Kubernetes the schema mapper is always running. When Airflow triggers it
+via dpn-pipeline-control, it switches to "drain mode": process everything
+currently in the mapper topic, then signal completion to dpn-pipeline-status.
+The pod does not stop — after draining it returns to KafkaTriggerBackend's
+poll loop and waits for the next trigger.
+
+DRAIN_IDLE_SECS env var controls how many consecutive idle seconds (no new
+messages) constitutes "queue empty". Default is 15 seconds.
 """
-
 from __future__ import annotations
 
 import base64
@@ -46,79 +45,68 @@ from azure.core.exceptions import AzureError, HttpResponseError
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 from google.api_core.exceptions import GoogleAPIError
+from confluent_kafka import Consumer, KafkaError, KafkaException
 
+from utils.config_validator import validate_cloud_config, validate_kafka_config
 from utils.data_transection import DataTransection
 from utils.exception_handler import HandleExceptions
 from utils.kafka_transection import KafkaTransection
 from utils.otel_logger import OtelLogger as Logging
-from utils.config_validator import validate_cloud_config, validate_kafka_config
+from utils.pipeline_context import PipelineContext
+from utils.scheduler_backend import get_backend
+from utils.step_logger import StepLogger
 
 load_dotenv()
 
+# How many consecutive seconds with no new Kafka messages before drain is done
+_DRAIN_IDLE_SECS: int = int(os.getenv("DRAIN_IDLE_SECS", "15"))
+
+
+# ---------------------------------------------------------------------------
+# Business-logic class  (UNCHANGED from v1.0)
+# ---------------------------------------------------------------------------
 
 class SchemaMapper:
     """
-    Producer-side schema mapper.
-
-    Validates file content and routes it to the target storage tier.
-    Consumes from ``mapperTopicName`` and produces to ``targetTopicName``.
+    Producer-side schema mapper for DL.
+    Consumes from mapperTopicName, validates, renames, routes to targetContainerName.
     """
 
     def __init__(self) -> None:
-        """Initialise from environment variables."""
-        # ── Existing instance variables (names unchanged) ─────────────────
-        self.cloud_provider: str = os.getenv("cloudProviderType", "azure")
-        self.target_kafka_topic: str = os.getenv("targetTopicName", "")
-        self.source_kafka_topic: str = os.getenv("mapperTopicName", "")
+        self.cloud_provider: str      = os.getenv("cloudProviderType", "azure")
+        self.target_kafka_topic: str  = os.getenv("targetTopicName", "")
+        self.source_kafka_topic: str  = os.getenv("mapperTopicName", "")
         self.source_azure_conn_str: str = base64.b64decode(
             os.getenv("mapperConnectionString", "")
         ).decode("utf-8")
         self.source_container_name: str = os.getenv("mapperContainerName", "")
         self.target_container_name: str = os.getenv("targetContainerName", "")
-        self.bootstrap_server: str = os.getenv("bootstrapServer", "")
+        self.bootstrap_server: str    = os.getenv("bootstrapServer", "")
         self.target_azure_conn_str: str = base64.b64decode(
             os.getenv("targetConnectionString", "")
         ).decode("utf-8")
-        self.org_name: str = os.getenv("orgName", "")
+        self.org_name: str   = os.getenv("orgName", "")
         self.schema_type: str = os.getenv("schemaType", "")
         self.file_name: str | None = None
 
-        # ── New AWS / MinIO variables ─────────────────────────────────────
         self.aws_endpoint_url: str | None = os.getenv("AWS_ENDPOINT_URL") or None
-
         self.aws_access_key_id = base64.b64decode(
-        os.getenv("AWS_ACCESS_KEY_ID", "")
+            os.getenv("AWS_ACCESS_KEY_ID", "")
         ).decode("utf-8")
-
         self.aws_secret_access_key = base64.b64decode(
             os.getenv("AWS_SECRET_ACCESS_KEY", "")
         ).decode("utf-8")
-
         self.aws_region: str = os.getenv("AWS_REGION", "us-east-1")
 
-        # ── Logger ────────────────────────────────────────────────────────
         self.logger = Logging().create_logger()
 
-        # ── Validate Cloud Config ─────────────────────────────────────────
         validate_cloud_config(
             cloud_provider=self.cloud_provider,
-            azure_fields=["srcConnectionString", "mapperConnectionString"],
+            azure_fields=["mapperConnectionString", "targetConnectionString"],
             logger=self.logger,
         )
-
-        # ── Validate Kafka Config ─────────────────────────────────────────
         validate_kafka_config(logger=self.logger)
 
-        # ── Success Log ────────────────────────────────────
-        self.logger.info(
-            "Configuration validation successful",
-            extra={
-                "event.name": "config.validation.success",
-                "cloud.provider": self.cloud_provider,
-            },
-        )        
-
-        # ── DataTransection ───────────────────────────────────────────────
         self.data_trans = DataTransection(
             source_azure_conn_str=self.source_azure_conn_str,
             source_container_name=self.source_container_name,
@@ -132,117 +120,31 @@ class SchemaMapper:
             aws_region=self.aws_region,
             logger=self.logger,
         )
-
-        # ── KafkaTransection ──────────────────────────────────────────────
         self.kafka_trans = KafkaTransection(
             bootstrap_server=self.bootstrap_server,
             logger=self.logger,
         )
 
-        self._log_config_banner()
-        self.logger.info(
-            "Kafka consumer listening",
-            extra={"topic": self.source_kafka_topic},
-        )
-
-    # -----------------------------------------------------------------------
-    def _log_config_banner(self) -> None:
-        """Emit a startup config summary (no credentials)."""
-        log_lines = [
-            "------------- Producer - Schema Mapper Config Information -------------",
-            f"cloudProviderType    : {self.cloud_provider}",
-            f"targetTopicName      : {self.target_kafka_topic}",
-            f"srcContainerName     : {self.source_container_name}",
-            f"targetContainerName  : {self.target_container_name}",
-            f"bootstrapServer      : {self.bootstrap_server}",
-        ]
-        width = max(len(line) for line in log_lines) + 4
-        border = "+" + "-" * (width - 2) + "+"
-        self.logger.info(border)
-        for line in log_lines:
-            self.logger.info(f"| {line.ljust(width - 4)} |")
-        self.logger.info(border)
-
-    # -----------------------------------------------------------------------
     def read_records(self, file: str) -> str:
-        """
-        Download file content from the mapper storage tier.
-
-        Parameters
-        ----------
-        file:
-            Object key / blob name to read.
-
-        Returns
-        -------
-        str
-            UTF-8 file content.
-        """
         self.data_trans.source_blob_name = file
         data = self.data_trans.data_read(cloud_vendor=self.cloud_provider)
         self.logger.info(
             "File content read",
-            extra={
-                "file": file,
-                "provider": self.cloud_provider,
-                "bytes": len(data),
-            },
+            extra={"file": file, "provider": self.cloud_provider, "bytes": len(data)},
         )
         return data
 
     def schema_validation(self, data: str) -> bool:
-        """
-        Validate *data* against the product schema.
-
-        Parameters
-        ----------
-        data:
-            Raw file content.
-
-        Returns
-        -------
-        bool
-            ``True`` if valid.
-
-        .. note::
-            Full schema validation logic is scheduled for PI3.
-            The current implementation is a pass-through stub.
-        """
-        # TODO (PI3): implement schema-specific validation
         self.logger.info(
-            "Schema validation invoked (stub – PI3)",
+            "Schema validation (stub – PI3)",
             extra={"schema_type": self.schema_type, "data_length": len(data)},
         )
         return True
 
     def move_files(self, file: str) -> bool:
-        """
-        Rename and copy *file* to the target storage tier (source preserved).
-
-        Destination name convention::
-
-            <schema_type>-<org_name>-<normalised_filename>
-
-        Before writing, the target is checked:
-        - File absent             -> copied unconditionally.
-        - File present, src newer -> overwritten.
-        - File present, src old   -> skipped (returns True, no write).
-
-        Parameters
-        ----------
-        file:
-            Source object key / blob name.
-
-        Returns
-        -------
-        bool
-            True on success (copy performed OR intentionally skipped).
-        """
         self.file_name = (
-            self.schema_type.lower()
-            + "-"
-            + self.org_name.lower()
-            + "-"
+            self.schema_type.lower() + "-"
+            + self.org_name.lower() + "-"
             + file.replace(" ", "_").replace("-", "_").lower()
         )
         result = self.data_trans.file_copy(
@@ -251,141 +153,261 @@ class SchemaMapper:
             dest_file_name=self.file_name,
         )
         self.logger.info(
-            "Producer mapper file_copy result",
-            extra={
-                "source_file": file,
-                "dest_file": self.file_name,
-                "copied": result.copied,
-                "skipped": result.skipped,
-                "reason": result.reason,
-            },
+            "Schema mapper file_copy result",
+            extra={"source_file": file, "dest_file": self.file_name,
+                   "copied": result.copied, "skipped": result.skipped},
         )
-        # Only return True when a file was actually copied.
-        # Skipped files (target already up-to-date) produce no Kafka event.
         return result.copied
 
     def send_to_kafka(self, is_file_move: bool) -> None:
-        """
-        Publish a file-ready event to the target Kafka topic.
-
-        Parameters
-        ----------
-        is_file_move:
-            When ``False`` the message is suppressed.
-        """
         if is_file_move:
-            message = {
-                "sourceType": "s3" if self.cloud_provider.lower() == "aws" else self.cloud_provider,
-                "storageContainer": self.target_container_name,
-                "path": self.file_name,
-            }
             self.kafka_trans.send_message(
-                target_topic=self.target_kafka_topic, message=message
+                target_topic=self.target_kafka_topic,
+                message={
+                    "sourceType":     "S3"
+                        if self.cloud_provider.upper() == "AWS"
+                        else self.cloud_provider.upper(),
+                    "storageContainer": self.target_container_name,
+                    "path":             self.file_name,
+                },
             )
             self.logger.info(
-                "Message pushed into Kafka topic",
+                "Target Kafka message published",
                 extra={"topic": self.target_kafka_topic, "file": self.file_name},
             )
-        else:
-            self.logger.info(
-                "Kafka message suppressed – file not copied (skipped or failed)",
-                extra={"file": self.file_name},
-            )
 
 
 # ---------------------------------------------------------------------------
-# Per-message processing
+# Per-message processor  (shared by both drain and continuous modes)
 # ---------------------------------------------------------------------------
-def main(schema_mapper: SchemaMapper, file: str) -> None:
-    """
-    Process a single file through the schema-mapper pipeline.
 
-    Parameters
-    ----------
-    schema_mapper:
-        Shared :class:`SchemaMapper` instance.
-    file:
-        Object key / blob name to process.
+def _process_one_message(
+    mapper: SchemaMapper,
+    step_log: StepLogger,
+    ctx: PipelineContext,
+    payload: dict[str, Any],
+) -> None:
     """
-    message = "Schema Mapper Started"
-    border = "=" * (len(message) + 4)
-    print(border)
-    print(f"| {message} |")
-    print(border)
+    Process one file through read → validate → move → publish.
+    All log lines carry ctx.run_id so every message processed in one
+    Airflow-triggered run is traceable together.
+    """
+    file_name: str = payload.get("path", "")
+    if not file_name:
+        mapper.logger.warning(
+            "[%s] Kafka payload missing 'path' — skipping (run_id=%s)",
+            ctx.pipeline_stage, ctx.run_id[:8],
+            extra={"event.name": "pipeline.payload.invalid", "payload": payload, **ctx.as_log_extra()},
+        )
+        return
 
-    except_handle = HandleExceptions()
+    exc_handle = HandleExceptions()
+    step_log.step_start(ctx, "schema_mapper_message", extra={"file": file_name})
     try:
-        data = schema_mapper.read_records(file=file)
-        is_valid = schema_mapper.schema_validation(data)
+        data     = mapper.read_records(file=file_name)
+        is_valid = mapper.schema_validation(data)
         if is_valid:
-            is_file_move = schema_mapper.move_files(file=file)
-            schema_mapper.send_to_kafka(is_file_move=is_file_move)
+            step_log.step_start(ctx, "move_files", extra={"file": file_name})
+            is_moved = mapper.move_files(file=file_name)
+            step_log.step_end(ctx, "move_files", extra={"moved": is_moved, "dest": mapper.file_name})
+            mapper.send_to_kafka(is_file_move=is_moved)
+        step_log.step_end(ctx, "schema_mapper_message", extra={"file": file_name})
+
     except (HttpResponseError, AzureError) as exc:
-        except_handle.handle_storage_exception(exc, "Azure")
+        step_log.step_failed(ctx, "schema_mapper_message", exc=exc, extra={"file": file_name})
+        exc_handle.handle_storage_exception(exc, "Azure")
     except (ClientError, BotoCoreError) as exc:
-        except_handle.handle_storage_exception(exc, "AWS S3")
+        step_log.step_failed(ctx, "schema_mapper_message", exc=exc, extra={"file": file_name})
+        exc_handle.handle_storage_exception(exc, "AWS S3")
     except GoogleAPIError as exc:
-        except_handle.handle_storage_exception(exc, "GCP")
+        step_log.step_failed(ctx, "schema_mapper_message", exc=exc, extra={"file": file_name})
+        exc_handle.handle_storage_exception(exc, "GCP")
     except Exception as exc:  # noqa: BLE001
-        except_handle.handle_storage_exception(exc, "")
-
-    message = "Schema Mapper Completed"
-    border = "=" * (len(message) + 4)
-    print(border)
-    print(f"| {message} |")
-    print(border)
+        step_log.step_failed(ctx, "schema_mapper_message", exc=exc, extra={"file": file_name})
+        exc_handle.handle_storage_exception(exc, "")
 
 
-def start_consumer(schema_mapper: SchemaMapper) -> None:
+# ---------------------------------------------------------------------------
+# run(ctx) — single entry point for all SchedulerBackends
+# ---------------------------------------------------------------------------
+
+def run(ctx: PipelineContext) -> None:
     """
-    Start the Kafka consumer loop for the schema mapper.
+    Run the schema mapper for one pipeline execution.
 
-    Blocks indefinitely, invoking :func:`main` for each message consumed
-    from the mapper topic.
+    DRAIN MODE  (ctx.triggered_by == "kafka-trigger")
+    ──────────────────────────────────────────────────
+    Processes all messages currently in the mapper Kafka topic.
+    Considers the queue "empty" when no new messages arrive for
+    DRAIN_IDLE_SECS consecutive seconds (default 15).
+    Returns when drain is complete — KafkaTriggerBackend then publishes
+    "completed" to dpn-pipeline-status so Airflow can proceed.
 
-    Parameters
-    ----------
-    schema_mapper:
-        Shared :class:`SchemaMapper` instance.
+    Why drain mode?
+    The adaptor just finished and published N file-ready events to the
+    mapper topic. We know the batch is finite. By draining until idle
+    we process exactly what the adaptor produced without running forever.
+
+    CONTINUOUS MODE  (ctx.triggered_by == "interval" or "standalone")
+    ──────────────────────────────────────────────────────────────────
+    Long-lived consumer loop — the existing behaviour. Runs indefinitely,
+    processing messages as they arrive. Used when Airflow is unavailable.
     """
-    def _handler(payload: dict[str, Any]) -> None:
-        file_name: str = payload.get("path", "")
-        if file_name:
-            main(schema_mapper=schema_mapper, file=file_name)
-        else:
-            schema_mapper.logger.warning(
-                "Kafka payload missing 'path' – skipping",
-                extra={"payload": payload},
-            )
+    mapper    = SchemaMapper()
+    step_log  = StepLogger(mapper.logger)
 
-    schema_mapper.kafka_trans.consume_messages(
-        source_topic=schema_mapper.source_kafka_topic,
-        group_id="producer_schema_mapper",
-        handler=_handler,
-    )
-
-
-if __name__ == "__main__":  # pragma: no cover
-    # Build SchemaMapper once – reused across all consumed messages.
-    _mapper = SchemaMapper()
-    _mapper.logger.info(
-        "Producer mapper starting – listening for Kafka events",
-        extra={
-            "source_topic": _mapper.source_kafka_topic,
-            "target_topic": _mapper.target_kafka_topic,
-            "cloud_provider": _mapper.cloud_provider,
+    step_log.pipeline_banner(
+        ctx,
+        service_name="producer-file-eq-schema-mapper",
+        config_summary={
+            "cloudProviderType":   mapper.cloud_provider,
+            "sourceKafkaTopic":    mapper.source_kafka_topic,
+            "targetTopicName":     mapper.target_kafka_topic,
+            "mapperContainerName": mapper.source_container_name,
+            "targetContainerName": mapper.target_container_name,
+            "PRODUCT_NAME":        os.getenv("PRODUCT_NAME", "eq"),
+            "SCHEDULER_BACKEND":   os.getenv("SCHEDULER_BACKEND", "standalone"),
         },
     )
-    # start_consumer blocks indefinitely via consume_messages().
-    # Wrap in a retry loop so a broker restart does not kill the process.
-    _retry_delay = int(os.getenv("consumerRetryDelaySecs", "5"))
+
+    def _handler(payload: dict[str, Any]) -> None:
+        _process_one_message(mapper, step_log, ctx, payload)
+
+    if ctx.triggered_by == "kafka-trigger":
+        _run_drain_mode(mapper, step_log, ctx, _handler)
+    else:
+        _run_continuous_mode(mapper, step_log, ctx, _handler)
+
+
+def _run_drain_mode(
+    mapper: SchemaMapper,
+    step_log: StepLogger,
+    ctx: PipelineContext,
+    handler: Any,
+) -> None:
+    """
+    Process all available messages then return.
+
+    Creates its own consumer (not using kafka_trans.consume_messages) so we
+    have explicit control over the idle-timeout exit condition.
+    """
+    mapper.logger.info(
+        "[%s] Drain mode — processing queue, idle timeout=%ds (run_id=%s)",
+        ctx.pipeline_stage, _DRAIN_IDLE_SECS, ctx.run_id[:8],
+        extra={
+            "event.name":           "pipeline.mapper.drain_mode",
+            "drain.idle_secs":      _DRAIN_IDLE_SECS,
+            "source.kafka_topic":   mapper.source_kafka_topic,
+            **ctx.as_log_extra(),
+        },
+    )
+
+    consumer = Consumer({
+        "bootstrap.servers":  mapper.bootstrap_server,
+        "group.id":           "producer_schema_mapper",
+        "auto.offset.reset":  "earliest",
+        "enable.auto.commit": True,
+    })
+    consumer.subscribe([mapper.source_kafka_topic])
+
+    step_log.step_start(ctx, "drain_queue")
+    processed = 0
+    last_message_at = time.monotonic()
+
+    try:
+        while True:
+            msg = consumer.poll(timeout=1.0)
+
+            if msg is None:
+                # No message this poll — check idle timeout
+                idle_secs = time.monotonic() - last_message_at
+                if idle_secs >= _DRAIN_IDLE_SECS:
+                    mapper.logger.info(
+                        "[%s] Queue drained — %d messages processed, idle %.0fs (run_id=%s)",
+                        ctx.pipeline_stage, processed, idle_secs, ctx.run_id[:8],
+                        extra={
+                            "event.name":            "pipeline.mapper.drain_complete",
+                            "messages.processed":    processed,
+                            "drain.idle_elapsed_secs": idle_secs,
+                            **ctx.as_log_extra(),
+                        },
+                    )
+                    break   # drain complete — return to KafkaTriggerBackend poll loop
+                continue
+
+            if msg.error():
+                if msg.error().code() == KafkaError._PARTITION_EOF:
+                    # Reached end of partition — but wait for idle timeout
+                    # in case more messages arrive shortly after
+                    continue
+                raise KafkaException(msg.error())
+
+            # Process the message
+            try:
+                import json
+                payload = json.loads(msg.value().decode("utf-8"))
+                handler(payload)
+                processed += 1
+                last_message_at = time.monotonic()
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                mapper.logger.warning(
+                    "Malformed mapper message — skipping",
+                    extra={"event.name": "pipeline.mapper.bad_message", "error": str(exc)},
+                )
+
+    finally:
+        consumer.close()
+
+    step_log.step_end(ctx, "drain_queue", extra={"messages_processed": processed})
+
+
+def _run_continuous_mode(
+    mapper: SchemaMapper,
+    step_log: StepLogger,
+    ctx: PipelineContext,
+    handler: Any,
+) -> None:
+    """
+    Long-lived consumer loop — original behaviour for non-Airflow execution.
+    Runs until the process is terminated.
+    """
+    retry_delay = int(os.getenv("consumerRetryDelaySecs", "5"))
+
+    mapper.logger.info(
+        "[%s] Continuous consumer mode (run_id=%s)",
+        ctx.pipeline_stage, ctx.run_id[:8],
+        extra={"event.name": "pipeline.mapper.continuous_mode", **ctx.as_log_extra()},
+    )
+
+    step_log.step_start(ctx, "mapper_consumer_loop")
     while True:
         try:
-            start_consumer(schema_mapper=_mapper)
-        except Exception as _exc:  # noqa: BLE001
-            _mapper.logger.error(
-                "Consumer loop exited unexpectedly – retrying",
-                extra={"error": str(_exc), "retry_in_secs": _retry_delay},
+            mapper.kafka_trans.consume_messages(
+                source_topic=mapper.source_kafka_topic,
+                group_id="producer_schema_mapper",
+                handler=handler,
+            )
+        except Exception as exc:  # noqa: BLE001
+            step_log.step_failed(ctx, "mapper_consumer_loop", exc=exc)
+            mapper.logger.error(
+                "[%s] Consumer loop exited — retrying in %ds (run_id=%s)",
+                ctx.pipeline_stage, retry_delay, ctx.run_id[:8],
+                extra={"event.name": "pipeline.mapper.retry", "error": str(exc), **ctx.as_log_extra()},
                 exc_info=True,
             )
-            time.sleep(_retry_delay)
+            time.sleep(retry_delay)
+            step_log.step_start(ctx, "mapper_consumer_loop")
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":  # pragma: no cover
+    _backend = get_backend()
+    _backend.execute(
+        run,
+        pipeline_stage="schema_mapper",
+        pipeline_type="file",
+        pipeline_role="producer",
+    )

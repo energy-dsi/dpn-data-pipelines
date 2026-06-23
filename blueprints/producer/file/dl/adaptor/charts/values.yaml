@@ -6,15 +6,22 @@ imageName: producer-file-adaptor-eq
 imageTag: ""
 productType: ""
 bootstrapServer: dpn-kafka-src:9092
-srcContainerName: bp-natural-gas-stage
+srcContainerName: dl-stage
 storageConnectionSecret: producer-file-dp-secret
-mapperTopicName: dpn-producer-bp-natural-gas-raw
-mapperContainerName: bp-natural-gas-raw
-targetTopicName: dpn-producer-bp-natural-gas-target
-targetContainerName: bp-natural-gas-target
+mapperTopicName: dpn-producer-dl-raw
+mapperContainerName: dl-raw
+targetTopicName: dpn-producer-dl-target
+targetContainerName: dl-target
 scheduleInterval: 60  # schedule interval in seconds
-orgName: BP
+orgName: DL
 schemaType: ""
+STATSD_HOST: ''
+STATSD_PORT: 8125
+PIPELINE_CONTROL_TOPIC : dpn-pipeline-control
+PIPELINE_STATUS_TOPIC : dpn-pipeline-status
+SCHEDULER_BACKEND: kafka-trigger
+EXECUTION_MODE : manual
+PRODUCT_NAME : dl
 # ------- AWS Config ------------
 awsEndpointUrl: "<<your specific value>>"
 awsRegion: us-east-1

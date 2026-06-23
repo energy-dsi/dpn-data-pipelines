@@ -1,29 +1,16 @@
+# Copyright DSI Project — Apache 2.0
+# v1.0.0 Initial | v1.1.0 Kafka trigger + StepLogger 2026-05-26
+
 """
-Topic Extractor – Kafka Consumer (Class-Based Implementation)
+/home/claude/dpn-complete/consumer/topic/extractor/main.py
 
-This module implements a Kafka consumer service that listens to a source topic
-(`srcTopicName`) and forwards each consumed message to a downstream topic
-(`mapperTopicName`), preserving all headers and message metadata.
+Kafka topic extractor (consumer).
+This service consumes messages from a source topic and forwards them
+to a mapper (transform) topic.
 
-Key Responsibilities:
----------------------
-- Consume messages from a source Kafka topic
-- Forward messages to a downstream topic
-- Preserve all message headers (schema metadata, offsets, etc.)
-- Log processing lifecycle with observability metadata
-- Retry on failure with configurable delay
-
-Topic Flow:
------------
-srcTopicName  →  [TopicExtractor]  →  mapperTopicName
-
-Environment Variables:
-----------------------
-bootstrapServer         : Kafka broker address
-srcTopicName            : Source Kafka topic
-mapperTopicName         : Destination topic (auto-derived if empty)
-srcGroupId              : Kafka consumer group ID
-consumerRetryDelaySecs  : Retry delay in seconds (default: 5)
+Kubernetes Environment Variables:
+    SCHEDULER_BACKEND=kafka-trigger
+    PRODUCT_NAME=consumer-topic
 """
 
 from __future__ import annotations
@@ -36,324 +23,287 @@ from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 from dotenv import load_dotenv
 
 from utils.otel_logger import OtelLogger as Logging
-
 from utils.topic_utils import TopicResolver, KafkaTopicManager
+from utils.pipeline_context import PipelineContext
+from utils.scheduler_backend import get_backend
+from utils.step_logger import StepLogger
 
-from utils.topic_consumer_config_validator import ExtractorValidator
 
+# Load environment variables from .env file
 load_dotenv()
 
+# Timeout used when running in triggered mode
+_TIMEOUT = int(os.getenv("TOPIC_TASK_TIMEOUT_SECS", "600"))
 
-class TopicExtractor:
-    """
-    Kafka Topic Extractor Service.
 
-    This class encapsulates the logic required to:
-    - Subscribe to a Kafka topic
-    - Consume messages continuously
-    - Forward messages to another topic while preserving headers
-    - Provide structured logging for observability
+class TopicForwarder:
     """
+    Kafka Topic Forwarder.
+
+    Responsible for:
+    - Consuming messages from the source topic
+    - Forwarding them to the mapper topic
+    - Handling Kafka producer/consumer lifecycle
+    - Logging and step tracking
+    """
+
+    SERVICE_NAME = "consumer-topic-extractor"
 
     def __init__(self) -> None:
-        """
-        Initialize the TopicExtractor service.
+        """Initialize Kafka producer, topic configuration, and logging."""
 
-        - Reads configuration from environment variables
-        - Resolves destination topic
-        - Ensures destination topic exists
-        - Initializes Kafka producer
-        """
-
-        # Initialize structured logger
         self.logger = Logging().create_logger()
 
-        self.topic_resolver = TopicResolver()
+        # Kafka configuration from environment
+        self.bootstrap = os.getenv("bootstrapServer", "")
+        self.src_topic = os.getenv("srcTopicName", "")
+        self.group_id = os.getenv("srcGroupId", self.SERVICE_NAME)
+        self.retry_delay = int(os.getenv("consumerRetryDelaySecs", "5"))
 
-        # ── Load Environment Variables ───────────────────────────
-        self.bootstrap_server: str = os.getenv("bootstrapServer", "")
-        self.src_topic: str = os.getenv("srcTopicName", "")
-
-        self.group_id: str = os.getenv(
-            "srcGroupId", "consumer-topic-extractor"
-        )
-
-        self.retry_delay: int = int(
-            os.getenv("consumerRetryDelaySecs", "5")
-        )
-
-        self.kafka_topic_manager = KafkaTopicManager(bootstrap_server = self.bootstrap_server, logger = self.logger)
-
-
-        # Resolve downstream topic (auto-derive if not provided)
-        self.mapper_topic: str = self.topic_resolver.resolve(
+        # Resolve mapper topic name
+        topic_resolver = TopicResolver()
+        self.mapper_topic = topic_resolver.resolve(
             os.getenv("mapperTopicName"),
             self.src_topic,
-            "trfm",
+            "trfm"
         )
 
-        # Ensure destination topic exists in Kafka broker
-        self.kafka_topic_manager.ensure_exists(
-            self.mapper_topic,
+        # Ensure mapper topic exists
+        topic_manager = KafkaTopicManager(
+            bootstrap_server=self.bootstrap,
+            logger=self.logger
+        )
+        topic_manager.ensure_exists(self.src_topic)
+        topic_manager.ensure_exists(self.mapper_topic)
+
+        # Kafka producer initialization
+        self.producer = Producer({"bootstrap.servers": self.bootstrap})
+
+        self.logger.info(
+            "extractor initialised",
+            extra={
+                "srcTopicName": self.src_topic,
+                "mapperTopicName": self.mapper_topic
+            }
         )
 
-        # Log startup configuration
-        self._log_startup_banner()
-
-        # Initialize Kafka producer
-        self.producer = Producer(
-            {"bootstrap.servers": self.bootstrap_server}
+        # Runtime debug configuration (console print)
+        print(
+            "\n--------------------------------------------"
+            " adaptor runtime config "
+            "--------------------------------------------"
+        )
+        print(
+            "bootstrapServer:", self.bootstrap,
+            "srcTopicName:", self.src_topic,
+            "mapperTopicName:", self.mapper_topic,
+            "srcGroupId:", self.group_id,
+            "PRODUCT_NAME:", os.getenv("PRODUCT_NAME"),
+            "SCHEDULER_BACKEND:", os.getenv("SCHEDULER_BACKEND"),
+            "TOPIC_TASK_TIMEOUT_SECS:", os.getenv("TOPIC_TASK_TIMEOUT_SECS"),
         )
 
-    # ────────────────────────────────────────────────────────────
-    # Logging Helpers
-    # ────────────────────────────────────────────────────────────
-    def _log_startup_banner(self) -> None:
-        """
-        Log a formatted startup banner containing configuration details.
-        """
 
-        lines = [
-            "---------- Consumer - Topic Extractor Config Information ----------",
-            f"srcTopicName    : {self.src_topic}",
-            f"mapperTopicName : {self.mapper_topic}",
-            f"bootstrapServer : {self.bootstrap_server}",
-            f"srcGroupId      : {self.group_id}",
-        ]
-
-        width = max(len(l) for l in lines) + 4
-        border = "+" + "-" * (width - 2) + "+"
-
-        self.logger.info(border)
-        for line in lines:
-            self.logger.info(f"| {line.ljust(width - 4)} |")
-        self.logger.info(border)
-
-    # ────────────────────────────────────────────────────────────
-    # Kafka Producer Callback
-    # ────────────────────────────────────────────────────────────
     def _on_delivery(self, err, msg) -> None:
         """
-        Kafka delivery callback executed after message production.
+        Kafka delivery callback.
 
         Args:
-            err: Error object if delivery failed, otherwise None
-            msg: Kafka message metadata
+            err: Delivery error, if any.
+            msg: Kafka message metadata.
         """
-
         if err:
-            # Log delivery failure
             self.logger.error(
-                "Kafka message delivery failed",
-                extra={
-                    "event.name": "message.delivery.failed",
-                    "service.name": "consumer-topic-extractor",
-                    "messaging.system": "kafka",
-                    "error.message": str(err),
-                },
-            )
-        else:
-            # Log successful delivery
-            self.logger.info(
-                "Kafka message delivered",
-                extra={
-                    "event.name": "message.delivery.completed",
-                    "service.name": "consumer-topic-extractor",
-                    "messaging.system": "kafka",
-                    "messaging.destination.name": msg.topic(),
-                    "messaging.kafka.partition": msg.partition(),
-                    "messaging.kafka.message.offset": msg.offset(),
-                },
+                "delivery failed",
+                extra={"error": str(err)}
             )
 
-    # ────────────────────────────────────────────────────────────
-    # Message Processing
-    # ────────────────────────────────────────────────────────────
-    def _process_message(self, msg) -> None:
+    def _forward(self, msg, ctx: PipelineContext, step_log: StepLogger) -> None:
         """
-        Process a single Kafka message.
-
-        Steps:
-        - Log processing start
-        - Forward message to destination topic with headers intact
-        - Log success or failure
+        Forward a single Kafka message to the mapper topic.
 
         Args:
-            msg: Kafka message object
+            msg: Kafka message received from source topic.
+            ctx: Pipeline execution context.
+            step_log: StepLogger instance for structured logging.
         """
+        operation = "forward"
+        start_time = datetime.now(UTC)
 
-        process_start_utc = datetime.now(UTC)
-
-        # Log processing start
-        self.logger.info(
-            "Message processing started",
+        # Log step start with partition and offset
+        step_log.step_start(
+            ctx,
+            operation,
             extra={
-                "event.name": "message.processing.started",
-                "service.name": "consumer-topic-extractor",
-                "messaging.system": "kafka",
-                "messaging.operation": "consume",
-                "messaging.destination.name": self.src_topic,
-                "messaging.kafka.partition": msg.partition(),
-                "messaging.kafka.message.offset": msg.offset(),
-                "message.size.bytes": len(msg.value()) if msg.value() else 0,
-                "process.start.time": process_start_utc.isoformat(),
-            },
+                "partition": msg.partition(),
+                "offset": msg.offset()
+            }
         )
 
         try:
-            # Forward message while preserving headers and key
+            # Produce message to mapper topic
             self.producer.produce(
                 topic=self.mapper_topic,
                 value=msg.value(),
                 key=msg.key(),
                 headers=msg.headers() or [],
-                callback=self._on_delivery,
+                callback=self._on_delivery
             )
 
-            # Trigger delivery callback events
+            # Trigger delivery callback
             self.producer.poll(0)
 
-            process_end_utc = datetime.now(UTC)
-
-            # Log successful processing
-            self.logger.info(
-                "Message processing completed",
-                extra={
-                    "event.name": "message.processing.completed",
-                    "service.name": "consumer-topic-extractor",
-                    "messaging.system": "kafka",
-                    "messaging.operation": "forward",
-                    "messaging.destination.name": self.mapper_topic,
-                    "messaging.kafka.partition": msg.partition(),
-                    "messaging.kafka.message.offset": msg.offset(),
-                    "process.start.time": process_start_utc.isoformat(),
-                    "process.end.time": process_end_utc.isoformat(),
-                    "process.duration.ms": int(
-                        (process_end_utc - process_start_utc).total_seconds() * 1000
-                    ),
-                },
+            # Calculate processing duration in milliseconds
+            duration_ms = int(
+                (datetime.now(UTC) - start_time).total_seconds() * 1000
             )
 
-        except Exception as exc:  # noqa: BLE001
-            process_end_utc = datetime.now(UTC)
-
-            # Log failure with stack trace
-            self.logger.error(
-                "Message processing failed",
+            # Log successful completion
+            step_log.step_end(
+                ctx,
+                operation,
                 extra={
-                    "event.name": "message.processing.failed",
-                    "service.name": "consumer-topic-extractor",
-                    "messaging.system": "kafka",
-                    "messaging.destination.name": self.mapper_topic,
-                    "messaging.kafka.partition": msg.partition(),
-                    "messaging.kafka.message.offset": msg.offset(),
-                    "process.start.time": process_start_utc.isoformat(),
-                    "process.end.time": process_end_utc.isoformat(),
-                    "process.duration.ms": int(
-                        (process_end_utc - process_start_utc).total_seconds() * 1000
-                    ),
-                    "error.message": str(exc),
-                },
-                exc_info=True,
-            )
-
-    # ────────────────────────────────────────────────────────────
-    # Main Consumer Loop
-    # ────────────────────────────────────────────────────────────
-    def run(self) -> None:
-        """
-        Start the Kafka consumer loop.
-
-        Behavior:
-        - Continuously consume messages
-        - Handle Kafka errors gracefully
-        - Retry with delay on failure
-        """
-
-        while True:
-            # Create a new consumer instance on each retry cycle
-            consumer = Consumer(
-                {
-                    "bootstrap.servers": self.bootstrap_server,
-                    "group.id": self.group_id,
-                    "auto.offset.reset": "earliest",
-                    "enable.auto.commit": True,
+                    "dst": self.mapper_topic,
+                    "duration_ms": duration_ms
                 }
             )
 
-            # Subscribe to source topic
-            consumer.subscribe([self.src_topic])
+        except Exception as exc:
+            # Log failure and rethrow exception
+            step_log.step_failed(ctx, operation, exc=exc)
+            raise
 
-            self.logger.info(
-                "Subscribed to source topic",
-                extra={
-                    "event.name": "consumer.subscribed",
-                    "service.name": "consumer-topic-extractor",
-                    "messaging.system": "kafka",
-                    "messaging.destination.name": self.src_topic,
-                },
-            )
+    def run_window(
+        self,
+        ctx: PipelineContext,
+        step_log: StepLogger,
+        stop_after: int | None = None
+    ) -> None:
+        """
+        Run the consumer loop for a specified duration or indefinitely.
+
+        Args:
+            ctx: Pipeline execution context.
+            step_log: StepLogger instance.
+            stop_after: Optional time limit (in seconds).
+        """
+
+        # Calculate deadline if timeout is specified
+        deadline = time.monotonic() + stop_after if stop_after else None
+
+        while True:
+            # Exit if deadline reached
+            if deadline and time.monotonic() >= deadline:
+                break
+
+            # Create Kafka consumer
+            consumer = Consumer({
+                "bootstrap.servers": self.bootstrap,
+                "group.id": self.group_id,
+                "auto.offset.reset": "earliest",
+                "enable.auto.commit": True,
+            })
+
+            consumer.subscribe([self.src_topic])
 
             try:
                 while True:
-                    # Poll for messages
+                    if deadline and time.monotonic() >= deadline:
+                        break
+
                     msg = consumer.poll(timeout=1.0)
 
+                    # No message received
                     if msg is None:
                         continue
 
-                    # Handle Kafka-level errors
+                    # Handle Kafka error messages
                     if msg.error():
                         if msg.error().code() == KafkaError._PARTITION_EOF:
                             continue
                         raise KafkaException(msg.error())
 
-                    # Process valid message
-                    self._process_message(msg)
+                    # Forward valid message
+                    self._forward(msg, ctx, step_log)
 
-            except KafkaException as exc:
-                # Kafka-specific error handling
+            except KafkaException as kafka_error:
                 self.logger.error(
-                    "Kafka error – retrying",
+                    "kafka error",
                     extra={
-                        "event.name": "kafka.retry",
-                        "service.name": "consumer-topic-extractor",
-                        "messaging.system": "kafka",
-                        "error.message": str(exc),
-                        "retry.delay.seconds": self.retry_delay,
-                    },
+                        "error": str(kafka_error),
+                        "retry": self.retry_delay
+                    }
                 )
 
-            except Exception as exc:  # noqa: BLE001
-                # Catch-all for unexpected failures
+            except Exception as unexpected_error:
                 self.logger.error(
-                    "Unexpected error – retrying",
-                    extra={
-                        "event.name": "unexpected.retry",
-                        "service.name": "consumer-topic-extractor",
-                        "error.message": str(exc),
-                        "retry.delay.seconds": self.retry_delay,
-                    },
-                    exc_info=True,
+                    "unexpected",
+                    extra={"error": str(unexpected_error)},
+                    exc_info=True
                 )
 
             finally:
-                # Ensure resources are cleaned up
+                # Ensure all buffered messages are sent
                 self.producer.flush()
+
+                # Close consumer cleanly
                 consumer.close()
 
-            # Wait before retrying
+            # Exit if deadline reached after cleanup
+            if deadline and time.monotonic() >= deadline:
+                break
+
+            # Retry delay before restarting consumer loop
             time.sleep(self.retry_delay)
 
 
-# ───────────────────────────────────────────────────────────────
-# Entry Point
-# ───────────────────────────────────────────────────────────────
-if __name__ == "__main__":
+def run(ctx: PipelineContext) -> None:
     """
-    Application entry point.
+    Entry point for the topic extractor pipeline stage.
 
-    Instantiates and starts the TopicExtractor service.
+    Args:
+        ctx: Pipeline execution context.
     """
-    ExtractorValidator().validate_all()
-    TopicExtractor().run()
+
+    forwarder = TopicForwarder()
+    step_log = StepLogger(forwarder.logger)
+
+    # Log pipeline start banner
+    step_log.pipeline_banner(
+        ctx,
+        service_name="consumer-topic-extractor",
+        config_summary={
+            "srcTopicName": forwarder.src_topic,
+            "mapperTopicName": forwarder.mapper_topic,
+            "SCHEDULER_BACKEND": os.getenv("SCHEDULER_BACKEND", "standalone"),
+            "PRODUCT_NAME": os.getenv("PRODUCT_NAME", "consumer-topic"),
+        },
+    )
+
+    operation = "extractor_window"
+
+    # Start main extraction step
+    step_log.step_start(ctx, operation)
+
+    # Apply timeout only for kafka-trigger mode
+    timeout = _TIMEOUT if ctx.triggered_by in ["kafka-trigger", "interval"] else None
+
+    try:
+        forwarder.run_window(ctx, step_log, stop_after=timeout)
+        step_log.step_end(ctx, operation)
+
+    except Exception as exc:
+        step_log.step_failed(ctx, operation, exc=exc)
+        raise
+
+
+if __name__ == "__main__":
+    # Execute pipeline using configured scheduler backend
+    print("bootstrapServer")
+    print(os.getenv("bootstrapServer", ""))
+    get_backend().execute(
+        run,
+        pipeline_stage="extractor",
+        pipeline_type="topic",
+        pipeline_role="consumer",
+    )

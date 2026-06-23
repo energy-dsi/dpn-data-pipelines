@@ -37,49 +37,69 @@ spec:
             runAsNonRoot: true
           command: ['python', 'main.py']
           env:
-          # ── Kafka ──────────────────────────────────────────────────────
           - name: "bootstrapServer"
             value: {{ .Values.bootstrapServer }}
+
           - name: "srcTopicName"
             value: {{ .Values.srcTopicName }}
+
           - name: "mapperTopicName"
             value: {{ .Values.mapperTopicName | default "" | quote }}
-          - name: "targetTopicName"
-            value: {{ .Values.targetTopicName | default "" | quote }}
-          - name: "mapperGroupId"
-            value: {{ .Values.mapperGroupId }}
-          # ── Header fallbacks ───────────────────────────────────────────
-          - name: "schemaType"
-            value: {{ .Values.schemaType }}
-          - name: "orgName"
-            value: {{ .Values.orgName }}
-          - name: "fileExtensionType"
-            value: {{ .Values.fileExtensionType }}
-          # ── Storage ────────────────────────────────────────────────────
-          - name: "cloudProviderType"
-            value: {{ .Values.cloudProviderType }}
-          - name: "targetContainerName"
-            value: {{ .Values.targetContainerName }}
-          - name: "targetConnectionString"
-            valueFrom:
-              secretKeyRef:
-                name: {{ .Values.storageConnectionSecret }}
-                key: TARGET_CONNECTION_STRING
-          - name: "AWS_ENDPOINT_URL"
-            value: {{ .Values.awsEndpointUrl }}
-          - name: "AWS_REGION"
-            value: {{ .Values.awsRegion }}
-          - name: "AWS_ACCESS_KEY_ID"
-            valueFrom:
-              secretKeyRef:
-                name: {{ .Values.awsAccessSecret }}
-                key: AWS_ACCESS_KEY_ID
-          - name: "AWS_SECRET_ACCESS_KEY"
-            valueFrom:
-              secretKeyRef:
-                name: {{ .Values.awsAccessSecret }}
-                key: AWS_SECRET_ACCESS_KEY
-          # ── Retry ──────────────────────────────────────────────────────
+
+          - name: "srcGroupId"
+            value: {{ .Values.srcGroupId }}
+
+          - name: "consumerRetryDelaySecs"
+            value: {{ .Values.consumerRetryDelaySecs | quote }}
+
+          - name: "namespace"
+            value: {{ .Values.namespace }}
+
+          - name: "name"
+            value: {{ .Values.name }}
+
+          - name: "imageName"
+            value: {{ .Values.imageName }}
+
+          - name: "PRODUCT_NAME"
+            value: {{ .Values.PRODUCT_NAME }}
+
+          - name: "SCHEDULER_BACKEND"
+            value: {{ .Values.SCHEDULER_BACKEND }}
+
+          - name: "EXECUTION_MODE"
+            value: {{ .Values.EXECUTION_MODE }}
+
+          - name: "scheduleInterval"
+            value: {{ .Values.scheduleInterval | quote }}
+
+          - name: "replicaCount"
+            value: {{ .Values.replicaCount | quote }}
+
+          - name: "PIPELINE_CONTROL_TOPIC"
+            value: {{ .Values.PIPELINE_CONTROL_TOPIC }}
+
+          - name: "PIPELINE_STATUS_TOPIC"
+            value: {{ .Values.PIPELINE_STATUS_TOPIC }}
+
+          - name: "DRAIN_IDLE_SECS"
+            value: {{ .Values.DRAIN_IDLE_SECS | quote }}
+
+          - name: "TOPIC_TASK_TIMEOUT_SECS"
+            value: {{ .Values.TOPIC_TASK_TIMEOUT_SECS | quote }}
+
+          - name: "statsdPort"
+            value: {{ .Values.statsdPort | quote }}
+
+          - name: "SERVICE_NAME"
+            value: {{ .Values.SERVICE_NAME }}
+
+          - name: "SERVICE_VERSION"
+            value: {{ .Values.SERVICE_VERSION }}
+
+          - name: "OTEL_EXPORTER_OTLP_ENDPOINT"
+            value: {{ .Values.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
+            
           - name: "consumerRetryDelaySecs"
             value: {{ .Values.consumerRetryDelaySecs | quote }}
       automountServiceAccountToken: false

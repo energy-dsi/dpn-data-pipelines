@@ -12,7 +12,29 @@ mapperContainerName: dp-consumer-trfm
 targetTopicName: dpn-consumer-target
 targetContainerName: dp-consumer-target
 scheduleInterval: 60  # schedule interval in seconds
+
 # ------- AWS Config ------------
 awsEndpointUrl: "<<your specific value>>"
 awsRegion: us-east-1
 awsAccessSecret: aws-access-secret
+
+# Scheduler / Execution
+SCHEDULER_BACKEND: kafka-trigger
+SCHEDULER_BACKEND: manual
+replicaCount: 1
+
+# Pipeline Control Topics
+PIPELINE_CONTROL_TOPIC: dpn-pipeline-control
+PIPELINE_STATUS_TOPIC: dpn-pipeline-status
+
+# Runtime Config
+DRAIN_IDLE_SECS: 15
+topicTaskTimeoutSecs: 60
+
+# Monitoring
+STATSD_PORT: 8125
+
+# OpenTelemetry
+SERVICE_NAME: data-pipeline
+SERVICE_VERSION: 1.0.0
+PRODUCT_NAME: consumer-file

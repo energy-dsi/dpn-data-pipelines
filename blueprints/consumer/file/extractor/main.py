@@ -1,266 +1,357 @@
-# Copyright 2026 DSI Project
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-# +---------+----------------------------------------------------------+---------------+-------------+
-# | Version | Description                                              | Change Owner  | Change Date |
-# +---------+----------------------------------------------------------+---------------+-------------+
-# | 1.0.0   | Initial version                                          | DSI Team      | 2026-05-01  |
-# +---------+----------------------------------------------------------+---------------+-------------+
 """
-Extractor – consumer-side file ingestion.
+Extractor — Consumer File Pipeline
 
-Polls the source container / bucket, moves files to the mapper staging tier,
-and publishes a Kafka event per file.
+This module implements the extractor stage of the file pipeline.
 
-The original ``boostrap_server`` attribute spelling (one 't') is preserved
-for backward compatibility with existing configuration.
+Responsibilities:
+- Poll source container for files
+- Copy files into mapper staging container
+- Publish Kafka events for downstream processing
 
-New environment variables (AWS / MinIO)
----------------------------------------
-``AWS_ENDPOINT_URL``      – MinIO endpoint (empty → real AWS S3)
-``AWS_ACCESS_KEY_ID``     – access key
-``AWS_SECRET_ACCESS_KEY`` – secret key
-``AWS_REGION``            – AWS region (default ``us-east-1``)
+Version History
+---------------
+v1.0.0  Initial release
+v1.1.0  Added Kafka trigger backend + StepLogger (2026-05-26)
+
+Execution (Kubernetes Recommended)
+---------------------------------
+SCHEDULER_BACKEND=kafka-trigger
+PRODUCT_NAME=consumer-file
 """
 
 from __future__ import annotations
 
 import base64
 import os
-import time
 
-import schedule
+# Cloud Exceptions
 from azure.core.exceptions import AzureError, HttpResponseError
 from botocore.exceptions import BotoCoreError, ClientError
-from dotenv import load_dotenv
 from google.api_core.exceptions import GoogleAPIError
 
+from dotenv import load_dotenv
+
+# Internal Utilities
+from utils.config_validator import validate_cloud_config, validate_kafka_config
 from utils.data_transection import DataTransection
 from utils.exception_handler import HandleExceptions
 from utils.kafka_transection import KafkaTransection
 from utils.otel_logger import OtelLogger as Logging
-from utils.config_validator import validate_cloud_config, validate_kafka_config
+from utils.pipeline_context import PipelineContext
+from utils.scheduler_backend import get_backend
+from utils.step_logger import StepLogger
+from utils.topic_utils import TopicResolver, KafkaTopicManager
 
+# Load environment variables
 load_dotenv()
 
 
+# =============================================================================
+# Business Logic: ExtractorFileProcess
+# =============================================================================
 class ExtractorFileProcess:
     """
-    Consumer-side file extractor.
+    Handles file extraction workflow.
 
-    Mirrors the producer-side adaptor but is deployed in the consumer
-    blueprint.  All original instance variable names (including the
-    ``boostrap_server`` spelling) are preserved.
+    Responsibilities:
+    - Discover files from source storage
+    - Copy files to staging container
+    - Publish Kafka events
     """
 
     def __init__(self) -> None:
-        """Initialise from environment variables."""
-        # ── Existing instance variables (names unchanged, incl. typo) ─────
-        self.cloud_provider: str = os.getenv("cloudProviderType", "azure")
-        self.target_kafka_topic: str = os.getenv("mapperTopicName", "")
-        self.source_azure_conn_str: str = base64.b64decode(
+        """
+        Initialize configuration, logger, and dependencies.
+        """
+
+        # ---------------------------------------------------------------------
+        # Environment Configuration
+        # ---------------------------------------------------------------------
+        self.cloud_provider = os.getenv("cloudProviderType", "azure")
+        self.kafka_topic = os.getenv("mapperTopicName", "")
+
+        # Azure Configuration
+        self.src_conn = base64.b64decode(
             os.getenv("srcConnectionString", "")
-        ).decode("utf-8")
-        self.source_container_name: str = os.getenv("srcContainerName", "")
-        self.target_container_name: str = os.getenv("mapperContainerName", "")
-        self.boostrap_server: str = os.getenv("bootstrapServer", "")  # typo preserved
-        self.target_azure_conn_str: str = base64.b64decode(
+        ).decode()
+        self.tgt_conn = base64.b64decode(
             os.getenv("mapperConnectionString", "")
-        ).decode("utf-8")
+        ).decode()
 
-        # ── New AWS / MinIO variables ─────────────────────────────────────
-        self.aws_endpoint_url: str | None = os.getenv("AWS_ENDPOINT_URL") or None
-        self.aws_access_key_id: str | None = base64.b64decode(os.getenv("AWS_ACCESS_KEY_ID")).decode("utf-8") or None
-        self.aws_secret_access_key: str | None = (
-            base64.b64decode(os.getenv("AWS_SECRET_ACCESS_KEY")).decode("utf-8") or None
-        )
-        self.aws_region: str = os.getenv("AWS_REGION", "us-east-1")
+        self.src_container = os.getenv("srcContainerName", "")
+        self.tgt_container = os.getenv("mapperContainerName", "")
 
-        # ── Logger ────────────────────────────────────────────────────────
+        # Kafka Configuration
+        self.bootstrap = os.getenv("bootstrapServer", "")
+
+        # AWS Configuration (Optional)
+        self.aws_endpoint = os.getenv("AWS_ENDPOINT_URL") or None
+        self.aws_key_id = base64.b64decode(
+            os.getenv("AWS_ACCESS_KEY_ID", "")
+        ).decode()
+        self.aws_secret = base64.b64decode(
+            os.getenv("AWS_SECRET_ACCESS_KEY", "")
+        ).decode()
+        self.aws_region = os.getenv("AWS_REGION", "us-east-1")
+
+        # ---------------------------------------------------------------------
+        # Logger Initialization
+        # ---------------------------------------------------------------------
         self.logger = Logging().create_logger()
 
-        # ── Validate Cloud Config ─────────────────────────────────────────
+        # ---------------------------------------------------------------------
+        # Configuration Validation
+        # ---------------------------------------------------------------------
         validate_cloud_config(
             cloud_provider=self.cloud_provider,
             azure_fields=["srcConnectionString", "mapperConnectionString"],
             logger=self.logger,
         )
-
-        # ── Validate Kafka Config ─────────────────────────────────────────
         validate_kafka_config(logger=self.logger)
 
-        # ── Success Log ────────────────────────────────────
-        self.logger.info(
-            "Configuration validation successful",
-            extra={
-                "event.name": "config.validation.success",
-                "cloud.provider": self.cloud_provider,
-            },
-        )        
+        # Resolve mapper topic name
+        topic_resolver = TopicResolver()
+        self.kafka_topic = topic_resolver.resolve(
+            self.kafka_topic,
+            self.kafka_topic,
+            "trfm"
+        )
 
-        # ── DataTransection ───────────────────────────────────────────────
+        # Ensure mapper topic exists
+        topic_manager = KafkaTopicManager(
+            bootstrap_server=self.bootstrap,
+            logger=self.logger
+        )
+
+        topic_manager.ensure_exists(self.kafka_topic)
+
+        # ---------------------------------------------------------------------
+        # Service Clients
+        # ---------------------------------------------------------------------
         self.data_trans = DataTransection(
-            source_azure_conn_str=self.source_azure_conn_str,
-            source_container_name=self.source_container_name,
-            target_container_name=self.target_container_name,
+            source_azure_conn_str=self.src_conn,
+            source_container_name=self.src_container,
+            target_container_name=self.tgt_container,
             source_blob_name=None,
             target_blob_name=None,
-            target_azure_conn_str=self.target_azure_conn_str,
-            aws_endpoint_url=self.aws_endpoint_url,
-            aws_access_key_id=self.aws_access_key_id,
-            aws_secret_access_key=self.aws_secret_access_key,
+            target_azure_conn_str=self.tgt_conn,
+            aws_endpoint_url=self.aws_endpoint,
+            aws_access_key_id=self.aws_key_id,
+            aws_secret_access_key=self.aws_secret,
             aws_region=self.aws_region,
             logger=self.logger,
         )
 
-        # ── KafkaTransection – accepts the typo spelling ──────────────────
         self.kafka_trans = KafkaTransection(
-            boostrap_server=self.boostrap_server,
+            bootstrap_server=self.bootstrap,
             logger=self.logger,
         )
 
-        self.logger.info(
-            "Extractor initialised",
-            extra={
-                "cloudProviderType": self.cloud_provider,
-                "mapperTopicName": self.target_kafka_topic,
-                "srcContainerName": self.source_container_name,
-                "mapperContainerName": self.target_container_name,
-                "bootstrapServer": self.boostrap_server,
-            },
-        )
-
-    # -----------------------------------------------------------------------
-    def read_source_file_info(self) -> list[str]:
+    # -------------------------------------------------------------------------
+    # File Operations
+    # -------------------------------------------------------------------------
+    def list_files(self):
         """
-        List files in the source container / bucket.
+        Retrieve list of files from the source container.
 
-        Returns
-        -------
-        list[str]
-            Object keys / blob names available for extraction.
+        Returns:
+            list: List of file names.
         """
-        source_file_name = self.data_trans.source_file_info(
+        files = self.data_trans.source_file_info(
             cloud_provider=self.cloud_provider
         )
+
         self.logger.info(
-            "Source files discovered",
-            extra={"count": len(source_file_name)},
+            "files discovered",
+            extra={"count": len(files)},
         )
-        return source_file_name
+        return files
 
-    def move_files(self, file: str) -> bool:
+    def process_file(self, file):
         """
-        Move *file* from source to mapper staging.
+        Copy a file from source to target staging.
 
-        Parameters
-        ----------
-        file:
-            Object key / blob name to move.
+        Args:
+            file (str): File name.
 
-        Returns
-        -------
-        bool
-            ``True`` on success.
+        Returns:
+            bool: True if file copied successfully, else False.
         """
-        is_file_moved: bool = self.data_trans.file_move(
-            cloud_vendor=self.cloud_provider, file_name=file
+        result = self.data_trans.file_copy(
+            cloud_vendor=self.cloud_provider,
+            file_name=file,
         )
-        return is_file_moved
 
-    def send_to_kafka(self, file_name: str, is_file_move: bool) -> None:
-        """
-        Publish a file-ready event to the mapper Kafka topic.
+        self.logger.info(
+            "file_copy",
+            extra={"file": file, "copied": result.copied},
+        )
 
-        Parameters
-        ----------
-        file_name:
-            Object key / blob name that was moved.
-        is_file_move:
-            Suppresses the message when ``False``.
+        return result.copied
+
+    def publish_event(self, file_name, ok):
         """
-        if is_file_move:
-            message = {
-                "sourceType": "s3" if self.cloud_provider.lower() == "aws" else self.cloud_provider,
-                "storageContainer": self.target_container_name,
-                "path": file_name,
-            }
+        Publish Kafka event for successfully processed files.
+
+        Args:
+            file_name (str): File name
+            ok (bool): Indicates if processing succeeded
+        """
+        if ok:
             self.kafka_trans.send_message(
-                target_topic=self.target_kafka_topic, message=message
-            )
-            self.logger.info(
-                "Kafka message published",
-                extra={"topic": self.target_kafka_topic, "file": file_name},
-            )
-        else:
-            self.logger.warning(
-                "Kafka message suppressed – move failed",
-                extra={"file": file_name},
+                target_topic=self.kafka_topic,
+                message={
+                    "sourceType": (
+                        "S3"
+                        if self.cloud_provider.upper() == "AWS"
+                        else self.cloud_provider.upper()
+                    ),
+                    "storageContainer": self.tgt_container,
+                    "path": file_name,
+                },
             )
 
 
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
-def main(extractor: "ExtractorFileProcess") -> None:
+# =============================================================================
+# Helper Function
+# =============================================================================
+def _provider(exc):
     """
-    Execute one extractor processing cycle.
+    Map exception types to cloud provider labels.
 
-    Lists source files, moves each to the mapper staging area, and
-    publishes a Kafka event per successful move.
+    Args:
+        exc (Exception): Exception instance
 
-    Parameters
-    ----------
-    extractor:
-        Shared :class:`ExtractorFileProcess` instance built once at startup.
-        Passing it in avoids re-creating cloud clients on every tick.
+    Returns:
+        str: Provider name
     """
-    except_handle = HandleExceptions()
-    try:
-        source_files = extractor.read_source_file_info()
-        if not source_files:
-            extractor.logger.info("No files found in source – nothing to do")
-            return
-        for file in source_files:
-            is_file_moved = extractor.move_files(file=file)
-            # send_to_kafka is a no-op when move failed
-            extractor.send_to_kafka(file_name=file, is_file_move=is_file_moved)
-    except (HttpResponseError, AzureError) as exc:
-        except_handle.handle_storage_exception(exc, "Azure")
-    except (ClientError, BotoCoreError) as exc:
-        except_handle.handle_storage_exception(exc, "AWS S3")
-    except GoogleAPIError as exc:
-        except_handle.handle_storage_exception(exc, "GCP")
-    except Exception as exc:  # noqa: BLE001
-        except_handle.handle_storage_exception(exc, "")
+    if isinstance(exc, (HttpResponseError, AzureError)):
+        return "Azure"
+    if isinstance(exc, (ClientError, BotoCoreError)):
+        return "AWS S3"
+    if isinstance(exc, GoogleAPIError):
+        return "GCP"
+    return ""
 
 
-if __name__ == "__main__":  # pragma: no cover
-    interval = int(os.getenv("scheduleInterval", "60"))
+# =============================================================================
+# Pipeline Execution Entry Point
+# =============================================================================
+def run(ctx: PipelineContext) -> None:
+    """
+    Execute one extractor pipeline cycle.
 
-    # Build the extractor once so cloud clients are not re-created every tick.
-    _extractor = ExtractorFileProcess()
-    _extractor.logger.info(
-        "Extractor scheduler started",
-        extra={"interval_seconds": interval},
+    Args:
+        ctx (PipelineContext): Pipeline execution context
+    """
+    proc = ExtractorFileProcess()
+    step_log = StepLogger(proc.logger)
+    exc_h = HandleExceptions()
+
+    # -------------------------------------------------------------------------
+    # Pipeline Start Banner
+    # -------------------------------------------------------------------------
+    step_log.pipeline_banner(
+        ctx,
+        service_name="consumer-file-extractor",
+        config_summary={
+            "cloudProviderType": proc.cloud_provider,
+            "mapperTopicName": proc.kafka_topic,
+            "SCHEDULER_BACKEND": os.getenv("SCHEDULER_BACKEND", "standalone"),
+            "PRODUCT_NAME": os.getenv("PRODUCT_NAME", "consumer-file"),
+        },
     )
 
-    # Run immediately on startup – do not wait one full interval.
-    main(_extractor)
+    # -------------------------------------------------------------------------
+    # Step 1: File Discovery
+    # -------------------------------------------------------------------------
+    step_log.step_start(ctx, "list_files")
+    try:
+        files = proc.list_files()
+        step_log.step_end(
+            ctx,
+            "list_files",
+            extra={"files_found": len(files)},
+        )
+    except Exception as exc:
+        step_log.step_failed(ctx, "list_files", exc=exc)
+        exc_h.handle_storage_exception(exc, _provider(exc))
+        return
 
-    # Then repeat every interval seconds.
-    schedule.every(interval).seconds.do(main, _extractor)
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+    # No files case
+    if not files:
+        proc.logger.info(
+            "[%s] no files (run_id=%s)",
+            ctx.pipeline_stage,
+            ctx.run_id[:8],
+            extra={"event.name": "pipeline.no_files", **ctx.as_log_extra()},
+        )
+        return
+
+    # -------------------------------------------------------------------------
+    # Step 2: File Processing
+    # -------------------------------------------------------------------------
+    copied = 0
+    skipped = 0
+
+    for f in files:
+        step_log.step_start(ctx, "process_file", extra={"file": f})
+        try:
+            ok = proc.process_file(f)
+            proc.publish_event(f, ok)
+
+            if ok:
+                copied += 1
+            else:
+                skipped += 1
+
+            step_log.step_end(
+                ctx,
+                "process_file",
+                extra={"file": f, "ok": ok},
+            )
+        except Exception as exc:
+            step_log.step_failed(
+                ctx,
+                "process_file",
+                exc=exc,
+                extra={"file": f},
+            )
+            exc_h.handle_storage_exception(exc, _provider(exc))
+
+    # -------------------------------------------------------------------------
+    # Pipeline Completion
+    # -------------------------------------------------------------------------
+    proc.logger.info(
+        "[%s] cycle done copied=%d skipped=%d (run_id=%s)",
+        ctx.pipeline_stage,
+        copied,
+        skipped,
+        ctx.run_id[:8],
+        extra={
+            "event.name": "pipeline.cycle.complete",
+            "files.copied": copied,
+            "files.skipped": skipped,
+            **ctx.as_log_extra(),
+        },
+    )
+
+
+# =============================================================================
+# Application Entry Point
+# =============================================================================
+if __name__ == "__main__":
+    """
+    Scheduler-agnostic execution entry.
+
+    Uses `SCHEDULER_BACKEND` environment variable:
+        kafka-trigger  → event-driven execution (recommended)
+        interval       → polling mode
+        standalone     → one-time execution
+    """
+    get_backend().execute(
+        run,
+        pipeline_stage="extractor",
+        pipeline_type="file",
+        pipeline_role="consumer",
+    )

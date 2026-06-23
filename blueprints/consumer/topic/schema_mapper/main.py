@@ -1,18 +1,18 @@
 """
-Topic Schema Mapper – Producer‑Side Ingestion Pipeline.
+Kafka Topic Schema Mapper (Consumer)
 
-This service consumes messages from a Kafka *mapper topic*, validates the
-message payload against a data product schema, enriches each message with
-metadata headers, and forwards valid messages to a configured *target topic*.
+This service:
+- Consumes messages from mapper topic
+- Extracts metadata from headers
+- Dynamically resolves target topic
+- Ensures valid topics are created
+- Skips invalid messages (no 'unknown' topics)
 
-Key responsibilities:
-- Consume messages from the mapper topic
-- Perform schema validation
-- Attach standardized Kafka headers
-- Forward messages to the target topic
-- Retry on recoverable Kafka errors
-
-Designed to run continuously as a long‑lived service.
+Behavior:
+---------
+✅ Only creates topics when ALL fields are valid
+❌ Does NOT create dpn-unknown-* topics
+✅ Supports camelCase + snake_case headers
 """
 
 from __future__ import annotations
@@ -26,288 +26,240 @@ from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 from dotenv import load_dotenv
 
 from utils.otel_logger import OtelLogger as Logging
-# from utils.topic_utils import self.kafka_topic_manager.ensure_exists, self.topic_resolver.resolve
-
 from utils.topic_utils import TopicResolver, KafkaTopicManager
-from utils.topic_consumer_config_validator import SchemaMapperValidator
+from utils.pipeline_context import PipelineContext
+from utils.scheduler_backend import get_backend
+from utils.step_logger import StepLogger
 
 
 load_dotenv()
 
+_TIMEOUT = int(os.getenv("TOPIC_TASK_TIMEOUT_SECS", "600"))
 
-def sanitize_identifier(value: str, default: str = "unknown") -> str:
+
+def _sanitize(value: str | None, default: str = "unknown") -> str:
     """
-    Sanitize identifiers used in topic names and Kafka headers.
-
-    Keeps only alphanumeric characters and forces lowercase.
-    Ensures Kafka‑safe and filename‑safe identifiers.
-
-    Args:
-        value: Raw identifier value.
-        default: Fallback value if input is empty or invalid.
-
-    Returns:
-        Sanitized lowercase string.
+    Sanitize string for safe Kafka topic naming.
     """
-    cleaned = re.sub(r"[^A-Za-z0-9]", "", value or default)
-    return cleaned.lower() or default
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", value or default).lower()
+    return cleaned or default
 
 
 class TopicSchemaMapper:
     """
-    Topic Schema Mapper service.
+    Kafka Consumer Schema Mapper
 
-    This class encapsulates the full lifecycle of the schema‑mapping pipeline:
-    - configuration loading
-    - Kafka topic preparation
-    - Kafka consumer & producer management
-    - message validation and forwarding
-    - fault handling and retry behaviour
-
-    The service is intentionally stateful and long‑running.
+    Responsibilities:
+    - Consume messages
+    - Extract and validate headers
+    - Dynamically resolve target topic
+    - Produce enriched messages
     """
 
     def __init__(self) -> None:
-        """
-        Initialize the mapper service.
-
-        Loads environment configuration, ensures required Kafka topics
-        exist, initializes logging, and creates the Kafka producer.
-        """
-        self.bootstrap_server: str = os.getenv("bootstrapServer", "")
-        self.topic_resolver = TopicResolver()
         self.logger = Logging().create_logger()
-        self.kafka_topic_manager = KafkaTopicManager(bootstrap_server = self.bootstrap_server, logger = self.logger)
+
+        # Kafka config
+        self.bootstrap = os.getenv("bootstrapServer", "")
         self.src_topic = os.getenv("mapperTopicName", "")
+        self.group_id = os.getenv("mapperGroupId", "consumer_topic_mapper")
+        self.retry_delay = int(os.getenv("consumerRetryDelaySecs", "5"))
 
-        self.group_id = os.getenv(
-            "mapperGroupId",
-            "producer-topic-schema-mapper",
-        )
+        # Default metadata (used only if headers missing, but NOT for topic creation)
+        self.schema_type = _sanitize(os.getenv("schemaType"))
+        self.org_name = _sanitize(os.getenv("orgName"))
+        self.product_type = _sanitize(os.getenv("productType"))
 
-        self.retry_delay = int(
-            os.getenv("consumerRetryDelaySecs", "5")
-        )
+        # Topic resolver
+        self.tr = TopicResolver()
 
-        self.mapper_topic = self.topic_resolver.resolve(
+        # Resolve mapper topic
+        self.mapper_topic = self.tr.resolve(
             os.getenv("mapperTopicName"),
             self.src_topic,
             "trfm",
         )
 
-        self._create_producer()
+        self.target_topic = ""
 
-    # ──────────────────────────────
-    # Configuration
-    # ──────────────────────────────
-    def _create_target_topic(self) -> None:
+        # Topic manager
+        self.km = KafkaTopicManager(
+            bootstrap_server=self.bootstrap,
+            logger=self.logger,
+        )
+
+        # Ensure mapper topic exists
+        self.km.ensure_exists(self.mapper_topic)
+
+        # Kafka producer
+        self.producer = Producer({"bootstrap.servers": self.bootstrap})
+
+
+    def _resolve_target(self, headers: dict) -> None:
         """
-        Create the topic name dynamically.
+        Resolve target topic ONLY if metadata is valid.
+        Prevents creating 'unknown' topics.
         """
 
+        headers = {k.lower(): v for k, v in headers.items()}
 
-        # Resolve mapper and target topics.
-        # If not explicitly provided, they are auto‑derived from srcTopicName.
+        # Support both naming styles
+        schema_type = _sanitize(
+            headers.get("schema_type") or headers.get("schematype")
+        )
+        org_name = _sanitize(
+            headers.get("org_name") or headers.get("orgname")
+        )
+        product_type = _sanitize(
+            headers.get("product_type") or headers.get("producttype")
+        )
 
-        target_topic_create = "dpn-consumer-"+self.schema_type + "-" + self.org_name + "-" + self.product_type + "-target"
+        # 🚨 CRITICAL: Skip invalid metadata
+        if (
+            schema_type == "unknown"
+            or org_name == "unknown"
+            or product_type == "unknown"
+        ):
+            self.logger.warning(
+                "Skipping message due to invalid metadata",
+                extra={
+                    "schema_type": schema_type,
+                    "org_name": org_name,
+                    "product_type": product_type,
+                },
+            )
+            self.target_topic = ""  # ensures no produce
+            return
 
-        self.target_topic = self.topic_resolver.resolve(
-            target_topic_create,
+        topic_name = (
+            f"dpn-consumer-{org_name}-{schema_type}-{product_type}-target"
+        )
+
+        resolved = self.tr.resolve(
+            topic_name,
             self.src_topic,
             "target",
         )
 
-        self._log_startup_banner()
+        if resolved != self.target_topic:
+            self.target_topic = resolved
 
-    # ──────────────────────────────
-    # Kafka Setup
-    # ──────────────────────────────
-    def _ensure_topics(self) -> None:
-        """
-        Ensure required Kafka topics exist on the broker.
+            self.logger.info(f"Ensuring topic exists: {self.target_topic}")
 
-        Topics are created if missing.
-        This ensures idempotent startup behavior.
-        """
-        self.kafka_topic_manager.ensure_exists(
-            self.mapper_topic
-        )
-        self.kafka_topic_manager.ensure_exists(
-            self.target_topic
-        )
+            try:
+                self.km.ensure_exists(self.target_topic)
+            except Exception as e:
+                self.logger.error(f"Topic creation failed: {e}")
 
-    def _create_consumer(self) -> Consumer:
-        """
-        Create and return a new Kafka consumer instance.
 
-        Consumers are recreated on failure to guarantee a clean state
-        during retries.
+    def _on_delivery(self, err, msg) -> None:
+        """Kafka delivery callback"""
+        if err:
+            self.logger.error("delivery failed", extra={"error": str(err)})
+
+
+    def _process(self, msg, ctx: PipelineContext, step_log: StepLogger) -> None:
         """
-        return Consumer(
-            {
-                "bootstrap.servers": self.bootstrap_server,
+        Process a single Kafka message.
+        """
+
+        operation = "mapper_msg"
+        start_time = datetime.now(UTC)
+
+        step_log.step_start(ctx, operation, extra={"partition": msg.partition()})
+
+        try:
+            # Decode headers
+            headers = {
+                k: v.decode() if isinstance(v, bytes) else v
+                for k, v in (msg.headers() or [])
+            }
+
+            print("HEADERS:", headers)
+
+            # Resolve topic
+            self._resolve_target(headers)
+
+            # ✅ Skip if invalid
+            if not self.target_topic:
+                self.logger.warning("Skipping produce (no valid target topic)")
+                return
+
+            print("TARGET:", self.target_topic)
+
+            enriched_headers = [
+                ("schemaType", _sanitize(headers.get("schema_type") or headers.get("schematype")).encode()),
+                ("orgName", _sanitize(headers.get("org_name") or headers.get("orgname")).encode()),
+                ("productType", _sanitize(headers.get("product_type") or headers.get("producttype")).encode()),
+                ("processedAt", datetime.now(UTC).isoformat().encode()),
+                ("offset",str(msg.offset())),
+            ]
+
+            self.producer.produce(
+                topic=self.target_topic,
+                value=msg.value(),
+                key=msg.key(),
+                headers=enriched_headers,
+                callback=self._on_delivery,
+            )
+
+            self.producer.poll(0)
+
+            duration_ms = int(
+                (datetime.now(UTC) - start_time).total_seconds() * 1000
+            )
+
+            step_log.step_end(
+                ctx,
+                operation,
+                extra={
+                    "dst": self.target_topic,
+                    "duration_ms": duration_ms,
+                },
+            )
+
+        except Exception as exc:
+            step_log.step_failed(ctx, operation, exc=exc)
+            raise
+
+
+    def run_window(self, ctx, step_log, stop_after=None):
+        """
+        Main Kafka polling loop.
+        """
+
+        deadline = time.monotonic() + stop_after if stop_after else None
+
+        while True:
+            if deadline and time.monotonic() >= deadline:
+                break
+
+            consumer = Consumer({
+                "bootstrap.servers": self.bootstrap,
                 "group.id": self.group_id,
                 "auto.offset.reset": "earliest",
                 "enable.auto.commit": True,
-            }
-        )
+            })
 
-    def _create_producer(self) -> None:
-        """
-        Create a Kafka producer instance.
-
-        The producer is stable across retries and flushed on shutdown.
-        """
-        self.producer = Producer(
-            {"bootstrap.servers": self.bootstrap_server}
-        )
-
-    # ──────────────────────────────
-    # Logging Helpers
-    # ──────────────────────────────
-    def _log_startup_banner(self) -> None:
-        """
-        Log a formatted startup banner with effective configuration.
-
-        This makes configuration validation visible at runtime
-        and simplifies operational troubleshooting.
-        """
-        lines = [
-            "------ Producer - Topic Schema Mapper Config ------",
-            f"srcTopicName        : {self.src_topic}",
-            f"mapperTopicName     : {self.mapper_topic}",
-            f"targetTopicName     : {self.target_topic}",
-            f"bootstrapServer     : {self.bootstrap_server}",
-            f"mapperGroupId       : {self.group_id}",
-            f"schemaType          : {self.schema_type}",
-            f"orgName             : {self.org_name}",
-            f"productType         : {self.product_type}",
-        ]
-
-        width = max(len(l) for l in lines) + 4
-        border = "+" + "-" * (width - 2) + "+"
-
-        self.logger.info(border)
-        for line in lines:
-            self.logger.info(f"| {line.ljust(width - 4)} |")
-        self.logger.info(border)
-
-    # ──────────────────────────────
-    # Message Processing
-    # ──────────────────────────────
-    def _schema_validation(self, value: bytes) -> bool:
-        """
-        Validate message content against the configured schema.
-
-        Currently a placeholder — always returns True.
-        Designed to be replaced by real schema validation logic.
-
-        Args:
-            value: Raw Kafka message payload.
-
-        Returns:
-            True if message is valid, otherwise False.
-        """
-        self.logger.info(
-            "Schema validation invoked",
-            extra={
-                "event.name": "schema.validation.started",
-                "schema.type": self.schema_type,
-                "message.size.bytes": len(value),
-            },
-        )
-        return True
-
-    def _build_headers(self, offset: int):
-        """
-        Build standardized Kafka message headers.
-
-        Headers enable downstream services to reconstruct filenames,
-        schemas, and lineage metadata.
-
-        Args:
-            offset: Kafka offset of the consumed message.
-
-        Returns:
-            List of Kafka header key/value tuples.
-        """
-        return [
-            ("schemaType", self.schema_type.encode()),
-            ("orgName", self.org_name.encode()),
-            ("productType", self.product_type.encode()),
-            ("offset", str(offset).encode()),
-        ]
-
-    def _delivery_callback(self, err, msg) -> None:
-        """
-        Kafka producer delivery callback.
-
-        Logs delivery success or failure for observability.
-        """
-        if err:
-            self.logger.error(
-                "Kafka message delivery failed",
-                extra={
-                    "event.name": "message.delivery.failed",
-                    "error.message": str(err),
-                },
-            )
-        else:
-            self.logger.info(
-                "Kafka message delivered",
-                extra={
-                    "event.name": "message.delivery.completed",
-                    "messaging.destination.name": msg.topic(),
-                    "messaging.kafka.partition": msg.partition(),
-                    "messaging.kafka.message.offset": msg.offset(),
-                },
-            )
-
-    # ──────────────────────────────
-    # Main Processing Loop
-    # ──────────────────────────────
-    def run(self) -> None:
-        """
-        Run the mapper service indefinitely.
-
-        Handles consumer lifecycle, retries on failure, and enforces
-        a delay between restarts.
-        """
-        while True:
-            consumer = self._create_consumer()
+            # ✅ Use resolved mapper topic
+            consumer.subscribe([self.mapper_topic])
 
             try:
-                consumer.subscribe([self.mapper_topic])
-                self.logger.info(
-                    "Subscribed to mapper topic",
-                    extra={
-                        "event.name": "consumer.subscribed",
-                        "messaging.destination.name": self.mapper_topic,
-                    },
-                )
+                while True:
+                    if deadline and time.monotonic() >= deadline:
+                        break
 
-                self._consume_loop(consumer)
+                    msg = consumer.poll(1.0)
 
-            except KafkaException as exc:
-                self.logger.error(
-                    "Kafka error – retrying",
-                    extra={
-                        "event.name": "kafka.retry",
-                        "error.message": str(exc),
-                        "retry.delay.seconds": self.retry_delay,
-                    },
-                )
+                    if msg is None:
+                        continue
 
-            except Exception as exc:  # noqa: BLE001
-                self.logger.error(
-                    "Unexpected error – retrying",
-                    extra={
-                        "event.name": "unexpected.retry",
-                        "error.message": str(exc),
-                        "retry.delay.seconds": self.retry_delay,
-                    },
-                    exc_info=True,
-                )
+                    if msg.error():
+                        if msg.error().code() == KafkaError._PARTITION_EOF:
+                            continue
+                        raise KafkaException(msg.error())
+
+                    self._process(msg, ctx, step_log)
 
             finally:
                 self.producer.flush()
@@ -315,84 +267,30 @@ class TopicSchemaMapper:
 
             time.sleep(self.retry_delay)
 
-    def _consume_loop(self, consumer: Consumer) -> None:
-        """
-        Poll Kafka and dispatch messages for processing.
 
-        Args:
-            consumer: Active Kafka consumer.
-        """
-        while True:
-            msg = consumer.poll(timeout=1.0)
+def run(ctx: PipelineContext) -> None:
+    """Pipeline entry point."""
 
-            if msg is None:
-                continue
+    mapper = TopicSchemaMapper()
+    step_log = StepLogger(mapper.logger)
 
-            if msg.error():
-                if msg.error().code() == KafkaError._PARTITION_EOF:
-                    continue
-                raise KafkaException(msg.error())
+    step_log.pipeline_banner(
+        ctx,
+        service_name="consumer-schema-mapper",
+        config_summary={"topic": mapper.mapper_topic},
+    )
 
-            self._process_message(msg)
+    timeout = _TIMEOUT if ctx.triggered_by == "kafka-trigger" else None
 
-    def _process_message(self, msg) -> None:
-        """
-        Process a single Kafka message end‑to‑end.
+    mapper.run_window(ctx, step_log, stop_after=timeout)
 
-        Handles validation, header enrichment, forwarding,
-        and metrics/logging.
 
-        Args:
-            msg: Kafka message object.
-        """
-        value = msg.value()
-        start = datetime.now(UTC)
-        header_dict = {key: value.decode() for key, value in msg.headers()}
+if __name__ == "__main__":
+    get_backend().execute(
+        run,
+        pipeline_stage="schema_mapper",
+        pipeline_type="topic",
+        pipeline_role="consumer",
+    )
 
-        self.org_name = header_dict.get("orgName")
-        self.schema_type = header_dict.get("schemaType")
-        self.product_type = header_dict.get("productType")
-
-        self._create_target_topic()
-        self._ensure_topics()
-
-        if not value:
-            self.logger.warning(
-                "Empty message – skipped",
-                extra={"event.name": "message.empty.skipped"},
-            )
-            return
-
-        if not self._schema_validation(value):
-            self.logger.warning(
-                "Schema validation failed",
-                extra={"event.name": "schema.validation.failed"},
-            )
-            return
-
-        headers = self._build_headers(msg.offset())
-
-        self.producer.produce(
-            topic=self.target_topic,
-            value=value,
-            key=msg.key(),
-            headers=headers,
-            callback=self._delivery_callback,
-        )
-        self.producer.poll(0)
-
-        end = datetime.now(UTC)
-
-        self.logger.info(
-            "Message processing completed",
-            extra={
-                "event.name": "message.processing.completed",
-                "process.duration.ms": int(
-                    (end - start).total_seconds() * 1000
-                ),
-            },
-        )
-
-if __name__ == "__main__":  # pragma: no cover
-    SchemaMapperValidator().validate_all()
-    TopicSchemaMapper().run()
+# {"product_type":"eqbdpggas","processed_at":"2026-06-02T14:04:06.603385+00:00","org_name":"neso","schema_type":"eqbd"}

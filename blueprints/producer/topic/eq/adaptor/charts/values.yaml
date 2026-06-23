@@ -14,17 +14,17 @@ imageTag: ""               # Image tag (empty = latest/default)
 # ============================================================
 bootstrapServer: dpn-kafka-src:9092   # Kafka broker endpoint
 
-mapperTopicName: dpn-producer-eq-raw   # Topic for raw incoming data
-srcTopicName: dpn-producer-eq-stage    # Source topic consumed by adaptor
-srcGroupId: producer_topic_eq     # Consumer group ID
+mapperTopicName: dpn-producer-dl-raw   # Topic for raw incoming data
+srcTopicName: dpn-producer-dl-stage    # Source topic consumed by adaptor
+srcGroupId: producer_topic_dl     # Consumer group ID
 
 
 # ============================================================
 # Schema Mapping Metadata
 # ============================================================
-orgName: neso              # Organization identifier
-schemaType: eq         # Schema type
-productType: eq # Product type
+orgName: pg              # Organization identifier
+schemaType: dl         # Schema type
+productType: dl # Product type
 
 
 # ============================================================
@@ -32,17 +32,17 @@ productType: eq # Product type
 # These values will override earlier ones if used by Helm/K8s
 # ============================================================
 namespace: ns-dpn-01     # Final namespace (same as above)
-name: dpn-producer-topic-eq-adaptor   # Final service name
-imageName: producer-topic-eq-adaptor  # Final image name
+name: dpn-producer-topic-dl-adaptor   # Final service name
+imageName: producer-topic-dl-adaptor  # Final image name
 
 
 # ============================================================
 # Pipeline Configuration
 # ============================================================
-PRODUCT_NAME: eq   # Logical product label
+PRODUCT_NAME: dl   # Logical product label
 
 SCHEDULER_BACKEND: kafka-trigger   # Execution backend (kafka-trigger / airflow / interval / standalone)
-EXECUTION_MODE: automatic             # Execution mode (manual disables automatic runs)
+EXECUTION_MODE: manual             # Execution mode (manual disables automatic runs)
 
 scheduleInterval: 240    # Polling interval (used only for interval scheduler)
 replicaCount: 1          # Number of pod replicas
@@ -59,7 +59,7 @@ PIPELINE_STATUS_TOPIC: dpn-pipeline-status     # Topic to send pipeline status u
 # Runtime Configuration
 # ============================================================
 DRAIN_IDLE_SECS: 15         # Idle time before stopping consumption
-TOPIC_TASK_TIMEOUT_SECS: 45 # Max runtime per execution
+TOPIC_TASK_TIMEOUT_SECS: 60 # Max runtime per execution
 
 
 # ============================================================
