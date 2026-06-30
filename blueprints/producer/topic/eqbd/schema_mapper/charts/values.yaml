@@ -71,8 +71,12 @@ statsdPort: 8125    # StatsD metrics port
 # ============================================================
 # OpenTelemetry (Tracing & Metrics)
 # ============================================================
-SERVICE_NAME: data-pipeline          # Service name for observability
-SERVICE_VERSION: 1.0.0               # Service version
-OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317  # OTEL collector endpoint
-
 consumerRetryDelaySecs: 5
+
+OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317
+OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+OTEL_EXPORTER_OTLP_INSECURE: true
+SERVICE_NAME: eqbd-topic-schema-mapper-service-name
+SERVICE_VERSION: 1.0.0
+ENVIRONMENT: development
+

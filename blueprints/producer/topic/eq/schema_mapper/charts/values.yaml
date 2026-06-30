@@ -14,17 +14,17 @@ imageTag: ""               # Image tag (empty = latest/default)
 # ============================================================
 bootstrapServer: dpn-kafka-src:9092   # Kafka broker endpoint
 
-mapperTopicName: dpn-producer-eqbd-pg-gas-raw   # Topic for raw incoming data
-srcTopicName: dpn-producer-eqbd-pg-gas-stage    # Source topic consumed by adaptor
-srcGroupId: producer_topic_eqbd_pg_gas_test     # Consumer group ID
+mapperTopicName: dpn-producer-eq-pg-gas-raw   # Topic for raw incoming data
+srcTopicName: dpn-producer-eq-pg-gas-stage    # Source topic consumed by adaptor
+srcGroupId: producer_topic_eq_pg_gas_test     # Consumer group ID
 
 
 # ============================================================
 # Schema Mapping Metadata
 # ============================================================
 orgName: pg              # Organization identifier
-schemaType: eqbd         # Schema type
-productType: eqbd-pg-gas # Product type
+schemaType: eq         # Schema type
+productType: eq-pg-gas # Product type
 
 
 # ============================================================
@@ -39,7 +39,7 @@ imageName: producer-topic-eq-neso-oil-adaptor  # Final image name
 # ============================================================
 # Pipeline Configuration
 # ============================================================
-PRODUCT_NAME: eqbd-pg-gas   # Logical product label
+PRODUCT_NAME: eq-pg-gas   # Logical product label
 
 SCHEDULER_BACKEND: kafka-trigger   # Execution backend (kafka-trigger / airflow / interval / standalone)
 EXECUTION_MODE: manual             # Execution mode (manual disables automatic runs)
@@ -73,6 +73,11 @@ statsdPort: 8125    # StatsD metrics port
 # ============================================================
 SERVICE_NAME: data-pipeline          # Service name for observability
 SERVICE_VERSION: 1.0.0               # Service version
-OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317  # OTEL collector endpoint
+OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317
+OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+OTEL_EXPORTER_OTLP_INSECURE: true
+SERVICE_NAME: eq-topic-schemamapper-service
+SERVICE_VERSION: 1.0.0
+ENVIRONMENT: development
 
 consumerRetryDelaySecs: 5
