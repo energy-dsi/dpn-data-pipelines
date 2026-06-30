@@ -104,5 +104,17 @@ spec:
               value: {{ .Values.EXECUTION_MODE | quote }}
             - name: "PRODUCT_NAME"
               value: {{ .Values.PRODUCT_NAME | quote }}
+            - name: "OTEL_EXPORTER_OTLP_ENDPOINT"
+              value: {{ .Values.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
+            - name: "OTEL_EXPORTER_OTLP_PROTOCOL"
+              value: {{ .Values.OTEL_EXPORTER_OTLP_PROTOCOL | quote }}
+            - name: "OTEL_EXPORTER_OTLP_INSECURE"
+              value: {{ .Values.OTEL_EXPORTER_OTLP_INSECURE | quote }}
+            - name: "SERVICE_NAME"
+              value: {{ .Values.SERVICE_NAME | quote }}
+            - name: "SERVICE_VERSION"
+              value: {{ .Values.SERVICE_VERSION | quote }}
+            - name: "ENVIRONMENT"
+              value: {{ .Values.ENVIRONMENT | quote }}
 
       automountServiceAccountToken: false
