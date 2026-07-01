@@ -188,6 +188,7 @@ class ExtractorFileProcess:
     # -------------------------------------------------------------------------
     # File Operations
     # -------------------------------------------------------------------------
+    @traced(span_name="list_files")
     def list_files(self):
         """
         Retrieve list of files from the source container.
@@ -215,7 +216,8 @@ class ExtractorFileProcess:
                 extra={"count": len(files)},
             )
             return files
-
+        
+    @traced(span_name="process_file")
     def process_file(self, file):
         """
         Copy a file from source to target staging.

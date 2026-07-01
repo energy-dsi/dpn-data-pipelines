@@ -115,5 +115,17 @@ spec:
 
           - name: "PRODUCT_NAME"
             value: {{ .Values.PRODUCT_NAME }}
+          
+          - name: "OTEL_EXPORTER_OTLP_ENDPOINT"
+            value: {{ .Values.OTEL_EXPORTER_OTLP_ENDPOINT }}
+          
+          - name: "OTEL_EXPORTER_OTLP_PROTOCOL"
+            value: {{ .Values.OTEL_EXPORTER_OTLP_PROTOCOL }}
+          
+          - name: "OTEL_EXPORTER_OTLP_INSECURE"
+            value: {{ .Values.OTEL_EXPORTER_OTLP_INSECURE }}
+          
+          - name: "ENVIRONMENT"
+            value: {{ .Values.ENVIRONMENT }}
             
       automountServiceAccountToken: false

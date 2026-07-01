@@ -141,7 +141,7 @@ class TopicForwarder:
                 "delivery failed",
                 extra={"error": str(err)}
             )
-
+    @traced(span_name="forward_message")
     def _forward(self, msg, ctx: PipelineContext, step_log: StepLogger) -> None:
         """
         Forward a single Kafka message to the mapper topic.

@@ -97,8 +97,19 @@ spec:
           - name: "SERVICE_VERSION"
             value: {{ .Values.SERVICE_VERSION }}
 
-          - name: "OTEL_EXPORTER_OTLP_ENDPOINT"
-            value: {{ .Values.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
           - name: "consumerRetryDelaySecs"
             value: {{ .Values.consumerRetryDelaySecs | quote }}
+
+          - name: "OTEL_EXPORTER_OTLP_ENDPOINT"
+            value: {{ .Values.OTEL_EXPORTER_OTLP_ENDPOINT }}
+          
+          - name: "OTEL_EXPORTER_OTLP_PROTOCOL"
+            value: {{ .Values.OTEL_EXPORTER_OTLP_PROTOCOL }}
+          
+          - name: "OTEL_EXPORTER_OTLP_INSECURE"
+            value: {{ .Values.OTEL_EXPORTER_OTLP_INSECURE }}
+          
+          - name: "ENVIRONMENT"
+            value: {{ .Values.ENVIRONMENT }}
+            
       automountServiceAccountToken: false
