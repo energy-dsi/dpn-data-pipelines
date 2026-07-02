@@ -73,7 +73,7 @@ statsdPort: 8125    # StatsD metrics port
 # ============================================================
 consumerRetryDelaySecs: 5
 
-OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317
+OTEL_EXPORTER_OTLP_ENDPOINT: http://dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4317
 OTEL_EXPORTER_OTLP_PROTOCOL: grpc
 OTEL_EXPORTER_OTLP_INSECURE: true
 SERVICE_NAME: eqbd-topic-schema-mapper-service-name
