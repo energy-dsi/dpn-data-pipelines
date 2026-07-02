@@ -107,7 +107,7 @@ spec:
             value: {{ .Values.OTEL_EXPORTER_OTLP_PROTOCOL }}
           
           - name: "OTEL_EXPORTER_OTLP_INSECURE"
-            value: {{ .Values.OTEL_EXPORTER_OTLP_INSECURE }}
+            value: {{ .Values.OTEL_EXPORTER_OTLP_INSECURE | quote }}
           
           - name: "ENVIRONMENT"
             value: {{ .Values.ENVIRONMENT }}
