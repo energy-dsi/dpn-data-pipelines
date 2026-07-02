@@ -1,4 +1,4 @@
-ARG ACR_NAME
+ARG ACR_NAME=acr
 FROM ${ACR_NAME}.azurecr.io/alpine:3.22
 
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
@@ -19,8 +19,9 @@ WORKDIR /schema_mapper
 USER appuser
 
 COPY --chown=root:root --chmod=755 requirements.txt .
-COPY --chown=root:root --chmod=755 packages .
+COPY --chown=root:root --chmod=755 packages ./packages
 COPY --chown=root:root --chmod=755 utils ./utils
+COPY --chown=root:root --chmod=755 dpn_observability_sdk ./dpn_observability_sdk
 COPY --chown=root:root --chmod=755 setup.py .
 
 RUN pip install --no-cache-dir -r requirements.txt && pip install -e .
