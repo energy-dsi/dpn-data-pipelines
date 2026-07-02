@@ -220,7 +220,7 @@ class SchemaMapper:
 
         self.messages_processed.add(1, {
             "source_topic": self.source_kafka_topic,
-            "file": self.file_name,
+            "file": file,
             "status": "success",
         })
 
