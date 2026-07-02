@@ -466,4 +466,5 @@ if __name__ == "__main__":
         pipeline_stage="schema_mapper",
         pipeline_type="file",
         pipeline_role="consumer",
+        component_name="consumer-file-schema-mapper",
     )

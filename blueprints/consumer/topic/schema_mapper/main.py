@@ -439,6 +439,7 @@ if __name__ == "__main__":
         pipeline_stage="schema_mapper",
         pipeline_type="topic",
         pipeline_role="consumer",
+        component_name="consumer-topic-mapper",
     )
 
 # {"product_type":"eqbdpggas","processed_at":"2026-06-02T14:04:06.603385+00:00","org_name":"neso","schema_type":"eqbd"}

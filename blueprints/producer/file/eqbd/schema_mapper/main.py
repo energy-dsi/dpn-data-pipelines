@@ -584,4 +584,5 @@ if __name__ == "__main__":  # pragma: no cover
         pipeline_stage="schema_mapper",
         pipeline_type="file",
         pipeline_role="producer",
+        component_name="producer-file-schema-mapper",
     )

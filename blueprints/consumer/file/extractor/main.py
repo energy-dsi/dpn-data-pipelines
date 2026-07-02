@@ -470,4 +470,5 @@ if __name__ == "__main__":
         pipeline_stage="extractor",
         pipeline_type="file",
         pipeline_role="consumer",
+        component_name="consumer-file-extractor",
     )
