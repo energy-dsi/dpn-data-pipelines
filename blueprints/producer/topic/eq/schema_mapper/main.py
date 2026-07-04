@@ -498,4 +498,5 @@ if __name__ == "__main__":
         pipeline_stage="schema_mapper",
         pipeline_type="topic",
         pipeline_role="producer",
+        component_name="producer-topic-schema-mapper",
     )

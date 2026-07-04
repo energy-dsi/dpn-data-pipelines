@@ -422,4 +422,5 @@ if __name__ == "__main__":
         pipeline_stage="extractor",
         pipeline_type="topic",
         pipeline_role="consumer",
+        component_name="consumer-topic-extractor",
     )

@@ -220,7 +220,7 @@ class SchemaMapper:
 
         self.messages_processed.add(1, {
             "source_topic": self.source_kafka_topic,
-            "file": self.file_name,
+            "file": file,
             "status": "success",
         })
 
@@ -584,4 +584,5 @@ if __name__ == "__main__":  # pragma: no cover
         pipeline_stage="schema_mapper",
         pipeline_type="file",
         pipeline_role="producer",
+        component_name="producer-file-schema-mapper",
     )

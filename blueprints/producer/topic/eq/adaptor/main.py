@@ -472,5 +472,6 @@ if __name__ == "__main__":
         pipeline_stage="adaptor",
         pipeline_type="topic",
         pipeline_role="producer",
+        component_name="producer-topic-adaptor",
     )
 

@@ -433,4 +433,5 @@ if __name__ == "__main__":  # pragma: no cover
         pipeline_stage="adaptor",
         pipeline_type="file",
         pipeline_role="producer",
+        component_name="producer-file-extractor",
     )
