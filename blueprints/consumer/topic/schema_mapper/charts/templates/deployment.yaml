@@ -101,10 +101,10 @@ spec:
             value: {{ .Values.consumerRetryDelaySecs | quote }}
 
           - name: "OTEL_EXPORTER_OTLP_ENDPOINT"
-            value: {{ .Values.OTEL_EXPORTER_OTLP_ENDPOINT }}
+            value: {{ .Values.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
           
           - name: "OTEL_EXPORTER_OTLP_PROTOCOL"
-            value: {{ .Values.OTEL_EXPORTER_OTLP_PROTOCOL }}
+            value: {{ .Values.OTEL_EXPORTER_OTLP_PROTOCOL | quote }}
           
           - name: "OTEL_EXPORTER_OTLP_INSECURE"
             value: {{ .Values.OTEL_EXPORTER_OTLP_INSECURE | quote }}
