@@ -29,6 +29,6 @@ awsAccessSecret: aws-access-secret
 OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4317
 OTEL_EXPORTER_OTLP_PROTOCOL: grpc
 OTEL_EXPORTER_OTLP_INSECURE: true
-SERVICE_NAME: my-service-name
+SERVICE_NAME: dpn data pipeline
 SERVICE_VERSION: 1.0.0
 ENVIRONMENT: development
