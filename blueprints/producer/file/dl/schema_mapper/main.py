@@ -128,11 +128,11 @@ class SchemaMapper:
 
         # Initialize OpenTelemetry
         self.tracer = OtelTracer.initialize(
-            service_name="consumer-file-schema-mapper",
+            service_name="producer-file-schema-mapper",
             service_version="1.0.0"
         )
         self.meter = OtelMetrics.initialize(
-            service_name="consumer-file-schema-mapper",
+            service_name="producer-file-schema-mapper",
             service_version="1.0.0"
         )
 
@@ -396,14 +396,14 @@ def run(ctx: PipelineContext) -> None:
 
         step_log.pipeline_banner(
             ctx,
-            service_name="producer-file-bp-natural-gas-schema-mapper",
+            service_name="producer-file-dl-schema-mapper",
             config_summary={
                 "cloudProviderType":   mapper.cloud_provider,
                 "sourceKafkaTopic":    mapper.source_kafka_topic,
                 "targetTopicName":     mapper.target_kafka_topic,
                 "mapperContainerName": mapper.source_container_name,
                 "targetContainerName": mapper.target_container_name,
-                "PRODUCT_NAME":        os.getenv("PRODUCT_NAME", "bp-natural-gas"),
+                "PRODUCT_NAME":        os.getenv("PRODUCT_NAME", "dl"),
                 "SCHEDULER_BACKEND":   os.getenv("SCHEDULER_BACKEND", "standalone"),
             },
         )
@@ -500,14 +500,23 @@ def _run_drain_mode(
                 try:
                     import json
                     payload = json.loads(msg.value().decode("utf-8"))
-                    handler(payload)
-                    processed += 1
+
+                    # Restore the producer's trace context from Kafka headers
+                    # *before* invoking the handler, so the handler's span
+                    # (and any spans it creates) become children of the
+                    # producer span — same trace_id end-to-end.
                     _carrier = {
                         k: v.decode() if isinstance(v, bytes) else v
                         for k, v in (msg.headers() or [])
                     }
                     _remote_ctx = _otel_propagate.extract(_carrier)
                     _token = _otel_context.attach(_remote_ctx)
+                    try:
+                        handler(payload)
+                    finally:
+                        _otel_context.detach(_token)
+
+                    processed += 1
                     last_message_at = time.monotonic()
                     span.set_attribute("kafka.source_topic", msg.topic())
                     span.set_attribute("kafka.partition", msg.partition())
@@ -568,9 +577,10 @@ def _run_continuous_mode(
 
 if __name__ == "__main__":  # pragma: no cover
     temp_mapper = SchemaMapper()
+    component_name=f"producer-file-schema-mapper-{os.getenv("PRODUCT_NAME", "dl")}"
     heartbeat = HeartbeatLogger(
         logger=temp_mapper.logger,
-        component_name="producer-file-schema-mapper",
+        component_name=component_name,
         metadata={
             "source_topic": temp_mapper.source_kafka_topic,
             "target_topic": temp_mapper.target_kafka_topic,
@@ -584,5 +594,5 @@ if __name__ == "__main__":  # pragma: no cover
         pipeline_stage="schema_mapper",
         pipeline_type="file",
         pipeline_role="producer",
-        component_name="producer-file-schema-mapper",
+        component_name=component_name
     )

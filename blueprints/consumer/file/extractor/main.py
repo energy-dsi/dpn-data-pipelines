@@ -32,6 +32,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from google.api_core.exceptions import GoogleAPIError
 
 from dotenv import load_dotenv
+from opentelemetry import context as otel_context
 
 # Internal Utilities
 from utils.config_validator import validate_cloud_config, validate_kafka_config
@@ -101,6 +102,10 @@ class ExtractorFileProcess:
 
         # Initialize heartbeat logger (started in __main__)
         self.heartbeat: HeartbeatLogger | None = None
+
+        # Captures the per-file "process_file" span context so publish_event
+        # can inject headers as a child of that span, not the pipeline span.
+        self._file_span_context: otel_context.Context | None = None
 
         # ---------------------------------------------------------------------
         # Environment Configuration
@@ -263,6 +268,10 @@ class ExtractorFileProcess:
                     extra={"file": file, "copied": result.copied},
                 )
 
+                # Capture this span's context so publish_event() below can
+                # inject it as the parent trace context for the mapper span.
+                self._file_span_context = otel_context.get_current()
+
                 return result.copied
 
             except Exception as exc:
@@ -285,18 +294,28 @@ class ExtractorFileProcess:
             ok (bool): Indicates if processing succeeded
         """
         if ok:
-            self.kafka_trans.send_message(
-                target_topic=self.kafka_topic,
-                message={
-                    "sourceType": (
-                        "S3"
-                        if self.cloud_provider.upper() == "AWS"
-                        else self.cloud_provider.upper()
-                    ),
-                    "storageContainer": self.tgt_container,
-                    "path": file_name,
-                },
-            )
+            # Restore the per-file "process_file" span context (captured in
+            # process_file) so the injected trace header is a child of that
+            # span rather than the coarser pipeline-level span.
+            token = None
+            if self._file_span_context is not None:
+                token = otel_context.attach(self._file_span_context)
+            try:
+                self.kafka_trans.send_message(
+                    target_topic=self.kafka_topic,
+                    message={
+                        "sourceType": (
+                            "S3"
+                            if self.cloud_provider.upper() == "AWS"
+                            else self.cloud_provider.upper()
+                        ),
+                        "storageContainer": self.tgt_container,
+                        "path": file_name,
+                    },
+                )
+            finally:
+                if token is not None:
+                    otel_context.detach(token)
 
 
 # =============================================================================

@@ -99,7 +99,7 @@ class TopicForwarder:
         retry_delay (int): Delay between retries (seconds)
     """
 
-    SERVICE_NAME = "producer-topic-eqbd-pg-gas-adaptor"
+    SERVICE_NAME = "producer-topic-eq-adaptor"
 
     def __init__(self) -> None:
         """Initialize Kafka producer, topics, and configuration."""
@@ -415,12 +415,12 @@ def run(ctx: PipelineContext) -> None:
         # Log pipeline start banner
         step_log.pipeline_banner(
             ctx,
-            service_name="producer-topic-eqbd-pg-gas-adaptor",
+            service_name="producer-topic-eq-adaptor",
             config_summary={
                 "srcTopicName": forwarder.src_topic,
                 "mapperTopicName": forwarder.mapper_topic,
                 "SCHEDULER_BACKEND": os.getenv("SCHEDULER_BACKEND", "standalone"),
-                "PRODUCT_NAME": os.getenv("PRODUCT_NAME", "eqbd-pg-gas"),
+                "PRODUCT_NAME": os.getenv("PRODUCT_NAME", "eq"),
             },
         )
 
@@ -456,9 +456,10 @@ if __name__ == "__main__":
     """
     backend = get_backend({"task_id": "trigger_adaptor"})
     temp_forwarder = TopicForwarder()
+    component_name=f"producer-topic-adaptor-{ os.getenv("PRODUCT_NAME", "eq")}"
     heartbeat = HeartbeatLogger(
         logger=temp_forwarder.logger,
-        component_name="producer-topic-adaptor",
+        component_name=component_name,
         metadata={
             "source_topic": temp_forwarder.src_topic,
             "mapper_topic": temp_forwarder.mapper_topic,
@@ -472,6 +473,6 @@ if __name__ == "__main__":
         pipeline_stage="adaptor",
         pipeline_type="topic",
         pipeline_role="producer",
-        component_name="producer-topic-adaptor",
+        component_name=component_name,
     )
 

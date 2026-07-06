@@ -65,10 +65,10 @@ Pipeline Flow:
 
 Example:
     Source Container:
-        bp-natural-gas-stage
+        eqbd-stage
 
     Mapper Container:
-        bp-natural-gas-mapper
+        eqbd-mapper
 
     Kafka Topic:
         mapperTopicName
@@ -111,18 +111,18 @@ load_dotenv()
 class AdaptorFileProcess:
     """
     File-ingestion adaptor for BP Natural Gas.
-    Reads from bp-natural-gas-stage, copies to mapper staging, publishes Kafka events.
+    Reads from eqbd-stage, copies to mapper staging, publishes Kafka events.
     """
 
     def __init__(self) -> None:
 
         # Initialize OpenTelemetry
         self.tracer = OtelTracer.initialize(
-            service_name="consumer-file-extractor",
+            service_name="producer-file-adaptor",
             service_version="1.0.0"
         )
         self.meter = OtelMetrics.initialize(
-            service_name="consumer-file-extractor",
+            service_name="producer-file-adaptor",
             service_version="1.0.0"
         )
 
@@ -147,6 +147,10 @@ class AdaptorFileProcess:
 
         # Initialize heartbeat logger (started in __main__)
         self.heartbeat: HeartbeatLogger | None = None
+
+        # Captures the per-file "process_file" span context so send_to_kafka
+        # can inject headers as a child of that span, not the pipeline span.
+        self._file_span_context: _otel_context.Context | None = None
 
         self.cloud_provider: str = os.getenv("cloudProviderType", "azure")
         self.target_kafka_topic: str = os.getenv("mapperTopicName", "")
@@ -203,6 +207,7 @@ class AdaptorFileProcess:
     @traced(span_name="list_files")
     def read_source_file_info(self) -> list[str]:
         with self.tracer.start_as_current_span("list_files") as span:
+            span.set_attribute("connectionstring", self.source_azure_conn_str)
             span.set_attribute("storage.container", self.source_container_name)
             span.set_attribute("storage.provider", self.cloud_provider)
 
@@ -255,6 +260,10 @@ class AdaptorFileProcess:
                 span.set_attribute("process.duration_ms", duration_ms)
                 span.set_attribute("process.status", "success" if result.copied else "skipped")
 
+                # Capture this span's context so send_to_kafka() below can
+                # inject it as the parent trace context for the mapper span.
+                self._file_span_context = _otel_context.get_current()
+
                 return result.copied
 
             except Exception as exc:
@@ -278,7 +287,19 @@ class AdaptorFileProcess:
                 "storageContainer": self.target_container_name,
                 "path":             file_name,
             }
-            self.kafka_trans.send_message(target_topic=self.target_kafka_topic, message=message)
+
+            # Restore the per-file "process_file" span context (captured in
+            # move_files) so the injected trace header is a child of that
+            # span rather than the coarser pipeline-level span.
+            token = None
+            if self._file_span_context is not None:
+                token = _otel_context.attach(self._file_span_context)
+            try:
+                self.kafka_trans.send_message(target_topic=self.target_kafka_topic, message=message)
+            finally:
+                if token is not None:
+                    _otel_context.detach(token)
+
             self.logger.info(
                 "Kafka message published",
                 extra={"topic": self.target_kafka_topic, "file": file_name},
@@ -321,14 +342,14 @@ def run(ctx: PipelineContext) -> None:
 
         step_log.pipeline_banner(
             ctx,
-            service_name="producer-file-bp-natural-gas-adaptor",
+            service_name="producer-file-eqbd-adaptor",
             config_summary={
                 "cloudProviderType":   adaptor.cloud_provider,
                 "mapperTopicName":     adaptor.target_kafka_topic,
                 "srcContainerName":    adaptor.source_container_name,
                 "mapperContainerName": adaptor.target_container_name,
                 "bootstrapServer":     adaptor.bootstrap_server,
-                "PRODUCT_NAME":        os.getenv("PRODUCT_NAME", "bp-natural-gas"),
+                "PRODUCT_NAME":        os.getenv("PRODUCT_NAME", "eqbd"),
                 "SCHEDULER_BACKEND":   os.getenv("SCHEDULER_BACKEND", "standalone"),
             },
         )
@@ -405,7 +426,7 @@ if __name__ == "__main__":  # pragma: no cover
     # Set SCHEDULER_BACKEND env var to choose mode:
     #
     #   SCHEDULER_BACKEND=kafka-trigger   ← recommended for Kubernetes
-    #   PRODUCT_NAME=bp-natural-gas
+    #   PRODUCT_NAME=eqbd
     #
     #   Pod subscribes to dpn-pipeline-control and runs one cycle each
     #   time Airflow publishes a matching trigger. No new pods created.
@@ -414,10 +435,10 @@ if __name__ == "__main__":  # pragma: no cover
     #   SCHEDULER_BACKEND=interval         ← self-scheduling fallback
     #   SCHEDULER_BACKEND=standalone       ← one-shot (default)
     temp_proc = AdaptorFileProcess()
-
+    component_name=f"producer-file-adaptor-{ os.getenv("PRODUCT_NAME", "eqbd")}"
     heartbeat = HeartbeatLogger(
         logger=temp_proc.logger,
-        component_name="producer-file-extractor",
+        component_name=component_name,
         metadata={
             "kafka_topic": temp_proc.target_kafka_topic,
             "src_container": temp_proc.source_container_name,
@@ -433,5 +454,5 @@ if __name__ == "__main__":  # pragma: no cover
         pipeline_stage="adaptor",
         pipeline_type="file",
         pipeline_role="producer",
-        component_name="producer-file-extractor",
+        component_name=f"producer-file-adaptor-{ os.getenv("PRODUCT_NAME", "eqbd")}",
     )

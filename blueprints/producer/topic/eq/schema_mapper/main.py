@@ -58,7 +58,7 @@ Pipeline Flow:
 
 Example:
     RAW Topic:
-        dpn-producer-eqbd-pg-gas-raw
+        dpn-producer-eq-raw
 
     TARGET Topic:
         dpn-producer-neso-eqbd-eqbdpggas-target
@@ -75,7 +75,7 @@ import time
 from datetime import UTC, datetime
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
-from opentelemetry import context as _otel_context, propagate as _otel_propagate
+from opentelemetry import propagate as _otel_propagate
 from dotenv import load_dotenv
 
 from utils.topic_utils import TopicResolver, KafkaTopicManager
@@ -265,9 +265,8 @@ class TopicSchemaMapper:
             for k, v in (msg.headers() or [])
         }
         _remote_ctx = _otel_propagate.extract(_carrier)
-        _token = _otel_context.attach(_remote_ctx)
 
-        with self.tracer.start_as_current_span("process_message") as span:
+        with self.tracer.start_as_current_span("process_message", context=_remote_ctx) as span:
 
             operation = "mapper_msg"
             start_time = datetime.now(UTC)
@@ -481,10 +480,10 @@ if __name__ == "__main__":
     """
     backend = get_backend({"task_id": "trigger_schema_mapper"})
     temp_forwarder = TopicSchemaMapper()
-
+    component_name=f"producer-topic-schema-mapper-{os.getenv("PRODUCT_NAME", "eq")}"
     heartbeat = HeartbeatLogger(
         logger=temp_forwarder.logger,
-        component_name="producer-topic-schema-mapper",
+        component_name=component_name,
         metadata={
             "source_topic": temp_forwarder.src_topic,
             "target_topic": temp_forwarder.target_topic,
@@ -498,5 +497,5 @@ if __name__ == "__main__":
         pipeline_stage="schema_mapper",
         pipeline_type="topic",
         pipeline_role="producer",
-        component_name="producer-topic-schema-mapper",
+        component_name=component_name,
     )
