@@ -1,52 +1,70 @@
-# Copyright DSI Project — Apache 2.0
+# Copyright 2026 DSI Project
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# +---------+----------------------------------------------------------+---------------+-------------+
+# | Version | Description                                              | Change Owner  | Change Date |
+# +---------+----------------------------------------------------------+---------------+-------------+
+# | 1.0.0   | Initial version                                          | DSI Team      | 2026-05-01  |
+# | 1.1.0   | OTEL Collector Integration                               | DSI Team      | 2026-06-26  |
+# | 1.2.0   | Airflow Integration Release                              | DSI Team      | 2026-06-27  |
+# +---------+----------------------------------------------------------+---------------+-------------+
 
 """
-Kafka Topic Schema Mapper (Producer)
+Kafka Topic Schema Mapper (Producer).
 
-Overview:
----------
-This service consumes messages from a RAW Kafka topic and forwards them
-to a dynamically resolved TARGET topic. It enriches each message with
-standardized metadata headers derived from environment configuration.
+This module implements the producer schema mapper responsible for
+consuming messages from a RAW Kafka topic, enriching them with
+standardized metadata, and forwarding them to a downstream TARGET
+Kafka topic.
 
-Design Principles:
-------------------
-- ✅ Static routing (ENV-driven)
-- ✅ No dependency on message headers for routing
-- ✅ Target topic created at startup (idempotent)
-- ✅ Supports fallback to 'unknown' metadata
-- ✅ Reliable delivery with explicit flush
-- ✅ Suitable for Kubernetes / event-driven pipelines
+The schema mapper supports scheduler-driven execution models,
+OpenTelemetry observability, heartbeat monitoring, Kafka-triggered
+execution, and interval-based processing patterns.
 
-Pipeline Flow:
---------------
-RAW Topic  ──►  Schema Mapper (this service)  ──►  TARGET Topic
-
-Key Features:
--------------
-- Deterministic topic naming convention
-- Automatic topic creation using Kafka Admin API
-- Message enrichment with processing metadata
-- Safe Kafka consumption using retry loop
-- Debug logging for observability
+Features:
+    * Kafka message consumption from RAW topics.
+    * Environment-driven metadata enrichment.
+    * Deterministic target topic resolution.
+    * OpenTelemetry tracing and metrics collection.
+    * Distributed trace context propagation.
+    * Heartbeat monitoring and operational logging.
+    * Scheduler backend integration for orchestrated execution.
+    * Automatic Kafka topic validation and creation.
 
 Environment Variables:
-----------------------
-bootstrapServer        : Kafka bootstrap servers
-mapperTopicName        : RAW topic name (source)
-schemaType             : Schema identifier (optional)
-orgName                : Organization name (optional)
-productType            : Product identifier (optional)
+    bootstrapServer: Kafka bootstrap server endpoint.
+    mapperTopicName: Source RAW Kafka topic name.
+    mapperGroupId: Kafka consumer group identifier.
+    consumerRetryDelaySecs: Consumer retry interval.
+    schemaType: Schema identifier used for target topic generation.
+    orgName: Organization identifier used for target topic generation.
+    productType: Product identifier used for target topic generation.
+    SCHEDULER_BACKEND: Execution backend configuration.
+    TOPIC_TASK_TIMEOUT_SECS: Processing window timeout.
+
+Pipeline Flow:
+    RAW Topic --> Schema Mapper --> TARGET Topic
 
 Example:
---------
-RAW:    dpn-producer-eqbd-pg-gas-raw
-TARGET: dpn-producer-neso-eqbd-eqbdpggas-target
+    RAW Topic:
+        dpn-producer-ssh-raw
 
-Deployment:
------------
-- Designed for Kubernetes
-- Supports Kafka-trigger / interval execution
+    TARGET Topic:
+        dpn-producer-neso-eqbd-eqbdpggas-target
+
+File Location:
+    Producer/topic/<data_product>/schema_mapper/main.py
 """
 
 from __future__ import annotations
@@ -57,13 +75,18 @@ import time
 from datetime import UTC, datetime
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
+from opentelemetry import propagate as _otel_propagate
 from dotenv import load_dotenv
 
-from utils.otel_logger import OtelLogger as Logging
 from utils.topic_utils import TopicResolver, KafkaTopicManager
 from utils.pipeline_context import PipelineContext
 from utils.scheduler_backend import get_backend
 from utils.step_logger import StepLogger
+from dpn_observability_sdk.otel_tracer import OtelTracer
+from dpn_observability_sdk.otel_metrics import OtelMetrics
+from dpn_observability_sdk.otel_instrumentation import traced, timed_metric
+from dpn_observability_sdk.heartbeat import HeartbeatLogger
+from dpn_observability_sdk.otel_logger import OtelLogger as Logging
 
 
 # Load environment variables from .env
@@ -117,6 +140,38 @@ class TopicSchemaMapper:
         """
         self.logger = Logging().create_logger()
 
+        # Initialize OpenTelemetry
+        self.tracer = OtelTracer.initialize(
+            service_name="producer-topic-schema-mapper",
+            service_version="1.0.0"
+        )
+        self.meter = OtelMetrics.initialize(
+            service_name="producer-topic-schema-mapper",
+            service_version="1.0.0"
+        )
+        
+        # Create metrics
+        self.messages_forwarded = self.meter.create_counter(
+            name="messages_forwarded_total",
+            description="Total messages forwarded",
+            unit="1",
+        )
+        
+        self.forward_duration = self.meter.create_histogram(
+            name="message_forward_duration",
+            description="Message forwarding duration",
+            unit="ms",
+        )
+        
+        self.messages_consumed = self.meter.create_counter(
+            name="messages_consumed_total",
+            description="Total messages consumed from source topic",
+            unit="1",
+        )
+
+        # Initialize heartbeat logger (will be started in main)
+        self.heartbeat: HeartbeatLogger | None = None
+
         # Kafka configuration
         self.bootstrap = os.getenv("bootstrapServer", "")
         self.src_topic = os.getenv("mapperTopicName", "")  # RAW topic
@@ -163,6 +218,7 @@ class TopicSchemaMapper:
             {"bootstrap.servers": self.bootstrap}
         )
 
+
     def _on_delivery(self, err, msg) -> None:
         """
         Kafka delivery callback.
@@ -179,6 +235,7 @@ class TopicSchemaMapper:
                 extra={"error": str(err)},
             )
 
+    @traced(span_name="process_message")
     def _process(
         self,
         msg,
@@ -200,54 +257,82 @@ class TopicSchemaMapper:
             ctx (PipelineContext): Execution context
             step_log (StepLogger): Pipeline logger
         """
-        operation = "mapper_msg"
-        start_time = datetime.now(UTC)
 
-        step_log.step_start(ctx, operation)
+        # Restore the extractor's trace context from Kafka headers so this span
+        # becomes a child of the extractor span — same trace_id end-to-end.
+        _carrier = {
+            k: v.decode() if isinstance(v, bytes) else v
+            for k, v in (msg.headers() or [])
+        }
+        _remote_ctx = _otel_propagate.extract(_carrier)
 
-        try:
+        with self.tracer.start_as_current_span("process_message", context=_remote_ctx) as span:
 
-            # Enrich metadata headers
-            enriched_headers = [
-                ("schemaType", self.schema_type.encode()),
-                ("orgName", self.org_name.encode()),
-                ("productType", self.product_type.encode()),
-                ("processedAt", datetime.now(UTC).isoformat().encode()),
-                ("offset",str(msg.offset())),
-            ]
+            operation = "mapper_msg"
+            start_time = datetime.now(UTC)
 
-            # Produce message
-            self.producer.produce(
-                topic=self.target_topic,
-                value=msg.value(),
-                key=msg.key(),
-                headers=enriched_headers,
-                callback=self._on_delivery,
-            )
+            span.set_attribute("kafka.source_topic", msg.topic())
+            span.set_attribute("kafka.partition", msg.partition())
+            span.set_attribute("kafka.offset", msg.offset())
 
-            # Trigger delivery
-            self.producer.poll(0)
+            step_log.step_start(ctx, operation)
 
-            # Ensure message is delivered (synchronous safety)
-            self.producer.flush()
+            try:
 
-            duration_ms = int(
-                (datetime.now(UTC) - start_time).total_seconds() * 1000
-            )
+                # Enrich metadata headers
+                enriched_headers = [
+                    ("schemaType", self.schema_type.encode()),
+                    ("orgName", self.org_name.encode()),
+                    ("productType", self.product_type.encode()),
+                    ("processedAt", datetime.now(UTC).isoformat().encode()),
+                    ("offset",str(msg.offset())),
+                ]
 
-            step_log.step_end(
-                ctx,
-                operation,
-                extra={
-                    "dst": self.target_topic,
-                    "duration_ms": duration_ms,
-                },
-            )
+                # Produce message
+                self.producer.produce(
+                    topic=self.target_topic,
+                    value=msg.value(),
+                    key=msg.key(),
+                    headers=enriched_headers,
+                    callback=self._on_delivery,
+                )
 
-        except Exception as exc:
-            step_log.step_failed(ctx, operation, exc=exc)
-            raise
+                # Compute processing time
+                duration_ms = int(
+                    (datetime.now(UTC) - start_time).total_seconds() * 1000
+                )
 
+                span.set_attribute("processing.status", "success")
+                span.set_attribute("processing.duration_ms", duration_ms)
+
+                # Trigger delivery
+                self.producer.poll(0)
+
+                # Ensure message is delivered (synchronous safety)
+                self.producer.flush()
+
+                duration_ms = int(
+                    (datetime.now(UTC) - start_time).total_seconds() * 1000
+                )
+
+                step_log.step_end(
+                    ctx,
+                    operation,
+                    extra={
+                        "dst": self.target_topic,
+                        "duration_ms": duration_ms,
+                    },
+                )
+
+            except Exception as exc:
+                span.set_attribute("processing.status", "error")
+                span.set_attribute("error.type", type(exc).__name__)
+                span.record_exception(exc)
+                step_log.step_failed(ctx, operation, exc=exc)
+                raise
+
+    @traced(span_name="schema_mapper_window")
+    @timed_metric("schema_mapper_window_duration", "Duration of schema mapper window")
     def run_window(
         self,
         ctx: PipelineContext,
@@ -265,49 +350,80 @@ class TopicSchemaMapper:
             step_log (StepLogger): Pipeline logger
             stop_after (int | None): Optional timeout
         """
-        deadline = time.monotonic() + stop_after if stop_after else None
 
-        while True:
-            if deadline and time.monotonic() >= deadline:
-                break
+        with self.tracer.start_as_current_span("schema_mapper_window") as span:
 
-            # Kafka consumer config
-            consumer = Consumer(
-                {
-                    "bootstrap.servers": self.bootstrap,
-                    "group.id": self.group_id,
-                    "auto.offset.reset": "earliest",  # ensures existing data is read
-                    "enable.auto.commit": True,
-                }
-            )
+            span.set_attribute("kafka.target_topic", self.target_topic)
+            span.set_attribute("kafka.group_id", self.group_id)
+            span.set_attribute("window.timeout_seconds", stop_after or 0)
 
-            # Subscribe to RAW topic
-            consumer.subscribe([self.src_topic])
+            messages_processed = 0
+            messages_skipped = 0
 
-            try:
-                while True:
-                    if deadline and time.monotonic() >= deadline:
-                        break
+            deadline = time.monotonic() + stop_after if stop_after else None
 
-                    msg = consumer.poll(1.0)
+            while True:
+                if deadline and time.monotonic() >= deadline:
+                    break
 
-                    if msg is None:
-                        continue
+                # Kafka consumer config
+                consumer = Consumer(
+                    {
+                        "bootstrap.servers": self.bootstrap,
+                        "group.id": self.group_id,
+                        "auto.offset.reset": "earliest",  # ensures existing data is read
+                        "enable.auto.commit": True,
+                    }
+                )
 
-                    if msg.error():
-                        if msg.error().code() == KafkaError._PARTITION_EOF:
+                # Subscribe to RAW topic
+                consumer.subscribe([self.src_topic])
+
+                try:
+                    while True:
+                        if deadline and time.monotonic() >= deadline:
+                            break
+
+                        msg = consumer.poll(1.0)
+
+                        if msg is None:
                             continue
-                        raise KafkaException(msg.error())
 
-                    self._process(msg, ctx, step_log)
+                        if msg.error():
+                            if msg.error().code() == KafkaError._PARTITION_EOF:
+                                continue
+                            raise KafkaException(msg.error())
 
-            finally:
-                self.producer.flush()
-                consumer.close()
+                        self._process(msg, ctx, step_log)
 
-            time.sleep(self.retry_delay)
+                        if self.target_topic:
+                            messages_processed += 1
+                        else:
+                            messages_skipped += 1
+
+                except Exception as unexpected_error:
+                    span.set_attribute("error.type", "unexpected_error")
+                    span.record_exception(unexpected_error)
+                    self.logger.error(
+                        "unexpected",
+                        extra={"error": str(unexpected_error)},
+                        exc_info=True
+                    )
 
 
+                finally:
+                    self.producer.flush()
+                    consumer.close()
+
+                time.sleep(self.retry_delay)
+
+            span.set_attribute("messages.processed", messages_processed)
+            span.set_attribute("messages.skipped", messages_skipped)
+            span.set_attribute("window.status", "completed")
+
+
+@traced(span_name="producer_schema_mapper_pipeline")
+@timed_metric("pipeline_total_duration", "Total pipeline execution time")
 def run(ctx: PipelineContext) -> None:
     """
     Pipeline entry point.
@@ -317,26 +433,43 @@ def run(ctx: PipelineContext) -> None:
     Args:
         ctx (PipelineContext): Execution context
     """
-    mapper = TopicSchemaMapper()
-    step_log = StepLogger(mapper.logger)
 
-    # Banner for observability
-    step_log.pipeline_banner(
-        ctx,
-        service_name="producer-schema-mapper",
-        config_summary={
-            "source_topic": mapper.src_topic,
-            "target_topic": mapper.target_topic,
-        },
-    )
+    tracer = OtelTracer.get_tracer(__name__)
+    
+    with tracer.start_as_current_span("schema_mapper_pipeline") as span:
+        span.set_attribute("pipeline.type", "producer-topic-schema-mapper")
+        span.set_attribute("pipeline.triggered_by", ctx.triggered_by)
+        span.set_attribute("pipeline.run_id", ctx.run_id)
 
-    timeout = (
-        _TIMEOUT
-        if ctx.triggered_by in ["kafka-trigger", "interval"]
-        else None
-    )
+        mapper = TopicSchemaMapper()
+        step_log = StepLogger(mapper.logger)
 
-    mapper.run_window(ctx, step_log, stop_after=timeout)
+        # Banner for observability
+        step_log.pipeline_banner(
+            ctx,
+            service_name="producer-schema-mapper",
+            config_summary={
+                "source_topic": mapper.src_topic,
+                "target_topic": mapper.target_topic,
+            },
+        )
+
+        timeout = (
+            _TIMEOUT
+            if ctx.triggered_by in ["kafka-trigger", "interval"]
+            else None
+        )
+        span.set_attribute("pipeline.timeout_seconds", timeout or 0)
+
+        try:
+            mapper.run_window(ctx, step_log, stop_after=timeout)
+            span.set_attribute("pipeline.status", "success")
+
+        except Exception as exc:
+            span.set_attribute("pipeline.status", "error")
+            span.set_attribute("error.type", type(exc).__name__)
+            span.record_exception(exc)
+            raise        
 
 
 if __name__ == "__main__":
@@ -345,9 +478,24 @@ if __name__ == "__main__":
 
     Executes schema mapper via configured scheduler backend.
     """
-    get_backend({"task_id": "trigger_schema_mapper"}).execute(
+    backend = get_backend({"task_id": "trigger_schema_mapper"})
+    temp_forwarder = TopicSchemaMapper()
+    component_name=f"producer-topic-schema-mapper-{os.getenv("PRODUCT_NAME", "ssh")}"
+    heartbeat = HeartbeatLogger(
+        logger=temp_forwarder.logger,
+        component_name=component_name,
+        metadata={
+            "source_topic": temp_forwarder.src_topic,
+            "target_topic": temp_forwarder.target_topic,
+            "scheduler_backend": os.getenv("SCHEDULER_BACKEND", "standalone"),
+        },
+    )
+    heartbeat.start()
+
+    backend.execute(
         run,
         pipeline_stage="schema_mapper",
         pipeline_type="topic",
         pipeline_role="producer",
+        component_name=component_name,
     )

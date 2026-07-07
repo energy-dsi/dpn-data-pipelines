@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import base64
 import os
+import time
+from datetime import UTC, datetime
 
 # Cloud Exceptions
 from azure.core.exceptions import AzureError, HttpResponseError
@@ -30,13 +32,18 @@ from botocore.exceptions import BotoCoreError, ClientError
 from google.api_core.exceptions import GoogleAPIError
 
 from dotenv import load_dotenv
+from opentelemetry import context as otel_context
 
 # Internal Utilities
 from utils.config_validator import validate_cloud_config, validate_kafka_config
 from utils.data_transection import DataTransection
 from utils.exception_handler import HandleExceptions
 from utils.kafka_transection import KafkaTransection
-from utils.otel_logger import OtelLogger as Logging
+from dpn_observability_sdk.otel_logger import OtelLogger as Logging
+from dpn_observability_sdk.otel_tracer import OtelTracer
+from dpn_observability_sdk.otel_metrics import OtelMetrics
+from dpn_observability_sdk.otel_instrumentation import traced, timed_metric
+from dpn_observability_sdk.heartbeat import HeartbeatLogger
 from utils.pipeline_context import PipelineContext
 from utils.scheduler_backend import get_backend
 from utils.step_logger import StepLogger
@@ -63,6 +70,42 @@ class ExtractorFileProcess:
         """
         Initialize configuration, logger, and dependencies.
         """
+
+        # Initialize OpenTelemetry
+        self.tracer = OtelTracer.initialize(
+            service_name="consumer-file-extractor",
+            service_version="1.0.0"
+        )
+        self.meter = OtelMetrics.initialize(
+            service_name="consumer-file-extractor",
+            service_version="1.0.0"
+        )
+
+        # Create metrics
+        self.files_processed = self.meter.create_counter(
+            name="files_processed_total",
+            description="Total files processed by file extractor",
+            unit="1",
+        )
+
+        self.file_copy_duration = self.meter.create_histogram(
+            name="file_copy_duration",
+            description="File copy duration",
+            unit="ms",
+        )
+
+        self.files_discovered = self.meter.create_counter(
+            name="files_discovered_total",
+            description="Total files discovered from source container",
+            unit="1",
+        )
+
+        # Initialize heartbeat logger (started in __main__)
+        self.heartbeat: HeartbeatLogger | None = None
+
+        # Captures the per-file "process_file" span context so publish_event
+        # can inject headers as a child of that span, not the pipeline span.
+        self._file_span_context: otel_context.Context | None = None
 
         # ---------------------------------------------------------------------
         # Environment Configuration
@@ -150,6 +193,7 @@ class ExtractorFileProcess:
     # -------------------------------------------------------------------------
     # File Operations
     # -------------------------------------------------------------------------
+    @traced(span_name="list_files")
     def list_files(self):
         """
         Retrieve list of files from the source container.
@@ -157,16 +201,28 @@ class ExtractorFileProcess:
         Returns:
             list: List of file names.
         """
-        files = self.data_trans.source_file_info(
-            cloud_provider=self.cloud_provider
-        )
+        with self.tracer.start_as_current_span("list_files") as span:
+            span.set_attribute("storage.container", self.src_container)
+            span.set_attribute("storage.provider", self.cloud_provider)
 
-        self.logger.info(
-            "files discovered",
-            extra={"count": len(files)},
-        )
-        return files
+            files = self.data_trans.source_file_info(
+                cloud_provider=self.cloud_provider
+            )
 
+            self.files_discovered.add(len(files), {
+                "cloud_provider": self.cloud_provider,
+                "container": self.src_container,
+            })
+
+            span.set_attribute("files.discovered", len(files))
+
+            self.logger.info(
+                "files discovered",
+                extra={"count": len(files)},
+            )
+            return files
+        
+    @traced(span_name="process_file")
     def process_file(self, file):
         """
         Copy a file from source to target staging.
@@ -177,17 +233,57 @@ class ExtractorFileProcess:
         Returns:
             bool: True if file copied successfully, else False.
         """
-        result = self.data_trans.file_copy(
-            cloud_vendor=self.cloud_provider,
-            file_name=file,
-        )
+        with self.tracer.start_as_current_span("process_file") as span:
+            span.set_attribute("file.name", file)
+            span.set_attribute("storage.source_container", self.src_container)
+            span.set_attribute("storage.target_container", self.tgt_container)
 
-        self.logger.info(
-            "file_copy",
-            extra={"file": file, "copied": result.copied},
-        )
+            start_time = datetime.now(UTC)
 
-        return result.copied
+            try:
+                result = self.data_trans.file_copy(
+                    cloud_vendor=self.cloud_provider,
+                    file_name=file,
+                )
+
+                duration_ms = int(
+                    (datetime.now(UTC) - start_time).total_seconds() * 1000
+                )
+
+                self.files_processed.add(1, {
+                    "cloud_provider": self.cloud_provider,
+                    "status": "success" if result.copied else "skipped",
+                })
+
+                self.file_copy_duration.record(duration_ms, {
+                    "cloud_provider": self.cloud_provider,
+                })
+
+                span.set_attribute("file.copied", result.copied)
+                span.set_attribute("process.duration_ms", duration_ms)
+                span.set_attribute("process.status", "success" if result.copied else "skipped")
+
+                self.logger.info(
+                    "file_copy",
+                    extra={"file": file, "copied": result.copied},
+                )
+
+                # Capture this span's context so publish_event() below can
+                # inject it as the parent trace context for the mapper span.
+                self._file_span_context = otel_context.get_current()
+
+                return result.copied
+
+            except Exception as exc:
+                self.files_processed.add(1, {
+                    "cloud_provider": self.cloud_provider,
+                    "status": "error",
+                })
+
+                span.set_attribute("process.status", "error")
+                span.set_attribute("error.type", type(exc).__name__)
+                span.record_exception(exc)
+                raise
 
     def publish_event(self, file_name, ok):
         """
@@ -198,18 +294,28 @@ class ExtractorFileProcess:
             ok (bool): Indicates if processing succeeded
         """
         if ok:
-            self.kafka_trans.send_message(
-                target_topic=self.kafka_topic,
-                message={
-                    "sourceType": (
-                        "S3"
-                        if self.cloud_provider.upper() == "AWS"
-                        else self.cloud_provider.upper()
-                    ),
-                    "storageContainer": self.tgt_container,
-                    "path": file_name,
-                },
-            )
+            # Restore the per-file "process_file" span context (captured in
+            # process_file) so the injected trace header is a child of that
+            # span rather than the coarser pipeline-level span.
+            token = None
+            if self._file_span_context is not None:
+                token = otel_context.attach(self._file_span_context)
+            try:
+                self.kafka_trans.send_message(
+                    target_topic=self.kafka_topic,
+                    message={
+                        "sourceType": (
+                            "S3"
+                            if self.cloud_provider.upper() == "AWS"
+                            else self.cloud_provider.upper()
+                        ),
+                        "storageContainer": self.tgt_container,
+                        "path": file_name,
+                    },
+                )
+            finally:
+                if token is not None:
+                    otel_context.detach(token)
 
 
 # =============================================================================
@@ -237,6 +343,8 @@ def _provider(exc):
 # =============================================================================
 # Pipeline Execution Entry Point
 # =============================================================================
+@traced(span_name="consumer_file_extractor_pipeline")
+@timed_metric("pipeline_total_duration", "Total pipeline execution time")
 def run(ctx: PipelineContext) -> None:
     """
     Execute one extractor pipeline cycle.
@@ -244,97 +352,112 @@ def run(ctx: PipelineContext) -> None:
     Args:
         ctx (PipelineContext): Pipeline execution context
     """
-    proc = ExtractorFileProcess()
-    step_log = StepLogger(proc.logger)
-    exc_h = HandleExceptions()
+    tracer = OtelTracer.get_tracer(__name__)
 
-    # -------------------------------------------------------------------------
-    # Pipeline Start Banner
-    # -------------------------------------------------------------------------
-    step_log.pipeline_banner(
-        ctx,
-        service_name="consumer-file-extractor",
-        config_summary={
-            "cloudProviderType": proc.cloud_provider,
-            "mapperTopicName": proc.kafka_topic,
-            "SCHEDULER_BACKEND": os.getenv("SCHEDULER_BACKEND", "standalone"),
-            "PRODUCT_NAME": os.getenv("PRODUCT_NAME", "consumer-file"),
-        },
-    )
+    with tracer.start_as_current_span("extractor_pipeline") as span:
+        span.set_attribute("pipeline.type", "consumer-file-extractor")
+        span.set_attribute("pipeline.triggered_by", ctx.triggered_by)
+        span.set_attribute("pipeline.run_id", ctx.run_id)
 
-    # -------------------------------------------------------------------------
-    # Step 1: File Discovery
-    # -------------------------------------------------------------------------
-    step_log.step_start(ctx, "list_files")
-    try:
-        files = proc.list_files()
-        step_log.step_end(
+        proc = ExtractorFileProcess()
+        step_log = StepLogger(proc.logger)
+        exc_h = HandleExceptions()
+
+        # -------------------------------------------------------------------------
+        # Pipeline Start Banner
+        # -------------------------------------------------------------------------
+        step_log.pipeline_banner(
             ctx,
-            "list_files",
-            extra={"files_found": len(files)},
+            service_name="consumer-file-extractor",
+            config_summary={
+                "cloudProviderType": proc.cloud_provider,
+                "mapperTopicName": proc.kafka_topic,
+                "SCHEDULER_BACKEND": os.getenv("SCHEDULER_BACKEND", "standalone"),
+                "PRODUCT_NAME": os.getenv("PRODUCT_NAME", "consumer-file"),
+            },
         )
-    except Exception as exc:
-        step_log.step_failed(ctx, "list_files", exc=exc)
-        exc_h.handle_storage_exception(exc, _provider(exc))
-        return
 
-    # No files case
-    if not files:
-        proc.logger.info(
-            "[%s] no files (run_id=%s)",
-            ctx.pipeline_stage,
-            ctx.run_id[:8],
-            extra={"event.name": "pipeline.no_files", **ctx.as_log_extra()},
-        )
-        return
-
-    # -------------------------------------------------------------------------
-    # Step 2: File Processing
-    # -------------------------------------------------------------------------
-    copied = 0
-    skipped = 0
-
-    for f in files:
-        step_log.step_start(ctx, "process_file", extra={"file": f})
+        # -------------------------------------------------------------------------
+        # Step 1: File Discovery
+        # -------------------------------------------------------------------------
+        step_log.step_start(ctx, "list_files")
         try:
-            ok = proc.process_file(f)
-            proc.publish_event(f, ok)
-
-            if ok:
-                copied += 1
-            else:
-                skipped += 1
-
+            files = proc.list_files()
             step_log.step_end(
                 ctx,
-                "process_file",
-                extra={"file": f, "ok": ok},
+                "list_files",
+                extra={"files_found": len(files)},
             )
         except Exception as exc:
-            step_log.step_failed(
-                ctx,
-                "process_file",
-                exc=exc,
-                extra={"file": f},
-            )
+            span.set_attribute("pipeline.status", "error")
+            span.set_attribute("error.type", type(exc).__name__)
+            span.record_exception(exc)
+            step_log.step_failed(ctx, "list_files", exc=exc)
             exc_h.handle_storage_exception(exc, _provider(exc))
+            return
 
-    # -------------------------------------------------------------------------
-    # Pipeline Completion
-    # -------------------------------------------------------------------------
-    proc.logger.info(
-        "[%s] cycle done copied=%d skipped=%d (run_id=%s)",
-        ctx.pipeline_stage,
-        copied,
-        skipped,
-        ctx.run_id[:8],
-        extra={
-            "event.name": "pipeline.cycle.complete",
-            "files.copied": copied,
-            "files.skipped": skipped,
-            **ctx.as_log_extra(),
-        },
-    )
+        # No files case
+        if not files:
+            proc.logger.info(
+                "[%s] no files (run_id=%s)",
+                ctx.pipeline_stage,
+                ctx.run_id[:8],
+                extra={"event.name": "pipeline.no_files", **ctx.as_log_extra()},
+            )
+            span.set_attribute("pipeline.status", "no_files")
+            return
+
+        # -------------------------------------------------------------------------
+        # Step 2: File Processing
+        # -------------------------------------------------------------------------
+        copied = 0
+        skipped = 0
+
+        for f in files:
+            step_log.step_start(ctx, "process_file", extra={"file": f})
+            try:
+                ok = proc.process_file(f)
+                proc.publish_event(f, ok)
+
+                if ok:
+                    copied += 1
+                else:
+                    skipped += 1
+
+                step_log.step_end(
+                    ctx,
+                    "process_file",
+                    extra={"file": f, "ok": ok},
+                )
+            except Exception as exc:
+                step_log.step_failed(
+                    ctx,
+                    "process_file",
+                    exc=exc,
+                    extra={"file": f},
+                )
+                exc_h.handle_storage_exception(exc, _provider(exc))
+
+        # -------------------------------------------------------------------------
+        # Pipeline Completion
+        # -------------------------------------------------------------------------
+        span.set_attribute("pipeline.files.copied", copied)
+        span.set_attribute("pipeline.files.skipped", skipped)
+        span.set_attribute("pipeline.status", "success")
+
+        proc.logger.info(
+            "[%s] cycle done copied=%d skipped=%d (run_id=%s)",
+            ctx.pipeline_stage,
+            copied,
+            skipped,
+            ctx.run_id[:8],
+            extra={
+                "event.name": "pipeline.cycle.complete",
+                "files.copied": copied,
+                "files.skipped": skipped,
+                **ctx.as_log_extra(),
+            },
+        )
 
 
 # =============================================================================
@@ -349,9 +472,22 @@ if __name__ == "__main__":
         interval       → polling mode
         standalone     → one-time execution
     """
+    temp_proc = ExtractorFileProcess()
+    heartbeat = HeartbeatLogger(
+        logger=temp_proc.logger,
+        component_name="consumer-file-extractor",
+        metadata={
+            "kafka_topic": temp_proc.kafka_topic,
+            "src_container": temp_proc.src_container,
+            "cloud_provider": temp_proc.cloud_provider,
+            "scheduler_backend": os.getenv("SCHEDULER_BACKEND", "standalone"),
+        },
+    )
+    heartbeat.start()
     get_backend().execute(
         run,
         pipeline_stage="extractor",
         pipeline_type="file",
         pipeline_role="consumer",
+        component_name="consumer-file-extractor",
     )
