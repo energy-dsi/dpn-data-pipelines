@@ -403,7 +403,7 @@ def run(ctx: PipelineContext) -> None:
                 "targetTopicName":     mapper.target_kafka_topic,
                 "mapperContainerName": mapper.source_container_name,
                 "targetContainerName": mapper.target_container_name,
-                "PRODUCT_NAME":        os.getenv("PRODUCT_NAME", "eq"),
+                "PRODUCT_NAME":        os.getenv('PRODUCT_NAME', 'eq'),
                 "SCHEDULER_BACKEND":   os.getenv("SCHEDULER_BACKEND", "standalone"),
             },
         )
@@ -577,7 +577,7 @@ def _run_continuous_mode(
 
 if __name__ == "__main__":  # pragma: no cover
     temp_mapper = SchemaMapper()
-    component_name=f"producer-file-schema-mapper-{os.getenv("PRODUCT_NAME", "eq")}"
+    component_name=f"producer-file-schema-mapper-{os.getenv('PRODUCT_NAME', 'eq')}"
     heartbeat = HeartbeatLogger(
         logger=temp_mapper.logger,
         component_name=component_name,
