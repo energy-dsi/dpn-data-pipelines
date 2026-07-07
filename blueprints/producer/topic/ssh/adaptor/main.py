@@ -420,7 +420,7 @@ def run(ctx: PipelineContext) -> None:
                 "srcTopicName": forwarder.src_topic,
                 "mapperTopicName": forwarder.mapper_topic,
                 "SCHEDULER_BACKEND": os.getenv("SCHEDULER_BACKEND", "standalone"),
-                "PRODUCT_NAME": os.getenv("PRODUCT_NAME", "ssh"),
+                "PRODUCT_NAME": os.getenv('PRODUCT_NAME', 'ssh'),
             },
         )
 
@@ -456,7 +456,7 @@ if __name__ == "__main__":
     """
     backend = get_backend({"task_id": "trigger_adaptor"})
     temp_forwarder = TopicForwarder()
-    component_name=f"producer-topic-adaptor-{ os.getenv("PRODUCT_NAME", "ssh")}"
+    component_name=f"producer-topic-adaptor-{ os.getenv('PRODUCT_NAME', 'ssh')}"
     heartbeat = HeartbeatLogger(
         logger=temp_forwarder.logger,
         component_name=component_name,

@@ -349,7 +349,7 @@ def run(ctx: PipelineContext) -> None:
                 "srcContainerName":    adaptor.source_container_name,
                 "mapperContainerName": adaptor.target_container_name,
                 "bootstrapServer":     adaptor.bootstrap_server,
-                "PRODUCT_NAME":        os.getenv("PRODUCT_NAME", "dl"),
+                "PRODUCT_NAME":        os.getenv('PRODUCT_NAME', 'dl'),
                 "SCHEDULER_BACKEND":   os.getenv("SCHEDULER_BACKEND", "standalone"),
             },
         )
@@ -435,7 +435,7 @@ if __name__ == "__main__":  # pragma: no cover
     #   SCHEDULER_BACKEND=interval         ← self-scheduling fallback
     #   SCHEDULER_BACKEND=standalone       ← one-shot (default)
     temp_proc = AdaptorFileProcess()
-    component_name=f"producer-file-adaptor-{ os.getenv("PRODUCT_NAME", "dl")}"
+    component_name=f"producer-file-adaptor-{ os.getenv('PRODUCT_NAME', 'dl')}"
     heartbeat = HeartbeatLogger(
         logger=temp_proc.logger,
         component_name=component_name,
@@ -454,5 +454,5 @@ if __name__ == "__main__":  # pragma: no cover
         pipeline_stage="adaptor",
         pipeline_type="file",
         pipeline_role="producer",
-        component_name=f"producer-file-adaptor-{ os.getenv("PRODUCT_NAME", "dl")}",
+        component_name=f"producer-file-adaptor-{ os.getenv('PRODUCT_NAME', 'dl')}",
     )

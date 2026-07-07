@@ -480,7 +480,7 @@ if __name__ == "__main__":
     """
     backend = get_backend({"task_id": "trigger_schema_mapper"})
     temp_forwarder = TopicSchemaMapper()
-    component_name=f"producer-topic-schema-mapper-{os.getenv("PRODUCT_NAME", "eqbds")}"
+    component_name=f"producer-topic-schema-mapper-{os.getenv('PRODUCT_NAME', 'eqbds')}"
     heartbeat = HeartbeatLogger(
         logger=temp_forwarder.logger,
         component_name=component_name,
