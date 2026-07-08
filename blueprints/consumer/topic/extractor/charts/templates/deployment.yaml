@@ -1,0 +1,115 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ .Values.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.name }}
+    spec:
+      restartPolicy: Always
+      containers:
+        - name: {{ .Values.name }}
+          image: "{{ .Values.acrName }}.azurecr.io/dsi/{{ .Values.imageName }}:{{ .Values.imageTag }}"
+          imagePullPolicy: Always
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+            runAsUser: 10000
+            runAsNonRoot: true
+          command: ['python', 'main.py']
+          env:
+          - name: "bootstrapServer"
+            value: {{ .Values.bootstrapServer }}
+
+          - name: "srcTopicName"
+            value: {{ .Values.srcTopicName }}
+
+          - name: "mapperTopicName"
+            value: {{ .Values.mapperTopicName | default "" | quote }}
+
+          - name: "srcGroupId"
+            value: {{ .Values.srcGroupId }}
+
+          - name: "consumerRetryDelaySecs"
+            value: {{ .Values.consumerRetryDelaySecs | quote }}
+
+          - name: "namespace"
+            value: {{ .Values.namespace }}
+
+          - name: "name"
+            value: {{ .Values.name }}
+
+          - name: "imageName"
+            value: {{ .Values.imageName }}
+
+          - name: "PRODUCT_NAME"
+            value: {{ .Values.PRODUCT_NAME }}
+
+          - name: "SCHEDULER_BACKEND"
+            value: {{ .Values.SCHEDULER_BACKEND }}
+
+          - name: "EXECUTION_MODE"
+            value: {{ .Values.EXECUTION_MODE }}
+
+          - name: "scheduleInterval"
+            value: {{ .Values.scheduleInterval | quote }}
+
+          - name: "replicaCount"
+            value: {{ .Values.replicaCount | quote }}
+
+          - name: "PIPELINE_CONTROL_TOPIC"
+            value: {{ .Values.PIPELINE_CONTROL_TOPIC }}
+
+          - name: "PIPELINE_STATUS_TOPIC"
+            value: {{ .Values.PIPELINE_STATUS_TOPIC }}
+
+          - name: "DRAIN_IDLE_SECS"
+            value: {{ .Values.DRAIN_IDLE_SECS | quote }}
+
+          - name: "TOPIC_TASK_TIMEOUT_SECS"
+            value: {{ .Values.TOPIC_TASK_TIMEOUT_SECS | quote }}
+
+          - name: "statsdPort"
+            value: {{ .Values.statsdPort | quote }}
+
+          - name: "SERVICE_NAME"
+            value: {{ .Values.SERVICE_NAME }}
+
+          - name: "SERVICE_VERSION"
+            value: {{ .Values.SERVICE_VERSION }}
+
+          - name: "consumerRetryDelaySecs"
+            value: {{ .Values.consumerRetryDelaySecs | quote }}
+
+          - name: "OTEL_EXPORTER_OTLP_ENDPOINT"
+            value: {{ .Values.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
+          
+          - name: "OTEL_EXPORTER_OTLP_PROTOCOL"
+            value: {{ .Values.OTEL_EXPORTER_OTLP_PROTOCOL | quote }}
+          
+          - name: "OTEL_EXPORTER_OTLP_INSECURE"
+            value: {{ .Values.OTEL_EXPORTER_OTLP_INSECURE | quote }}
+          
+          - name: "ENVIRONMENT"
+            value: {{ .Values.ENVIRONMENT }}
+            
+      automountServiceAccountToken: false

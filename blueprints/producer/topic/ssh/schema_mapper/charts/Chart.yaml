@@ -1,0 +1,4 @@
+apiVersion: v2
+name: producer-topic-schema-mapper
+description: Helm chart for the DPN Producer Topic Schema Mapper (streaming pathway).
+version: 0.0.1

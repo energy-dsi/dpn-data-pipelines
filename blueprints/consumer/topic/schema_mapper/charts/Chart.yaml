@@ -1,0 +1,4 @@
+apiVersion: v2
+name: consumer-topic-schema-mapper
+description: Helm chart for the DPN Consumer Topic Schema Mapper (streaming pathway).
+version: 0.0.1

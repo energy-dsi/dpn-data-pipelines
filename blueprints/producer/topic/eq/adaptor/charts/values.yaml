@@ -1,0 +1,82 @@
+# ============================================================
+# Deployment Identity
+# ============================================================
+namespace: ns-dpn-01        # Kubernetes namespace for deployment
+name: producer-topic-adaptor   # Initial service name (overwritten below if duplicated)
+
+acrName: ""                 # Azure Container Registry name (empty = not used)
+imageName: producer-topic-adaptor   # Initial container image name
+imageTag: ""               # Image tag (empty = latest/default)
+
+
+# ============================================================
+# Kafka Configuration (Source Cluster)
+# ============================================================
+bootstrapServer: dpn-kafka-src:9092   # Kafka broker endpoint
+
+mapperTopicName: dpn-producer-eq-raw   # Topic for raw incoming data
+srcTopicName: dpn-producer-eq-stage    # Source topic consumed by adaptor
+srcGroupId: producer_topic_eq     # Consumer group ID
+
+
+# ============================================================
+# Schema Mapping Metadata
+# ============================================================
+orgName: pg              # Organization identifier
+schemaType: eq         # Schema type
+productType: eq # Product type
+
+
+# ============================================================
+# ⚠️ Duplicate Key Section (Overrides Above Values)
+# These values will override earlier ones if used by Helm/K8s
+# ============================================================
+namespace: ns-dpn-01     # Final namespace (same as above)
+name: dpn-producer-topic-eq-adaptor   # Final service name
+imageName: producer-topic-eq-adaptor  # Final image name
+
+
+# ============================================================
+# Pipeline Configuration
+# ============================================================
+PRODUCT_NAME: eq   # Logical product label
+
+SCHEDULER_BACKEND: kafka-trigger   # Execution backend (kafka-trigger / airflow / interval / standalone)
+EXECUTION_MODE: manual             # Execution mode (manual disables automatic runs)
+
+scheduleInterval: 240    # Polling interval (used only for interval scheduler)
+replicaCount: 1          # Number of pod replicas
+
+
+# ============================================================
+# Kafka Control Topics
+# ============================================================
+PIPELINE_CONTROL_TOPIC: dpn-pipeline-control   # Topic to trigger pipeline execution
+PIPELINE_STATUS_TOPIC: dpn-pipeline-status     # Topic to send pipeline status updates
+
+
+# ============================================================
+# Runtime Configuration
+# ============================================================
+DRAIN_IeqE_SECS: 15         # Ieqe time before stopping consumption
+TOPIC_TASK_TIMEOUT_SECS: 60 # Max runtime per execution
+
+
+# ============================================================
+# Monitoring Configuration
+# ============================================================
+statsdPort: 8125    # StatsD metrics port
+
+
+# ============================================================
+# OpenTelemetry (Tracing & Metrics)
+# ============================================================
+
+consumerRetryDelaySecs: 5
+
+OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4317
+OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+OTEL_EXPORTER_OTLP_INSECURE: true
+SERVICE_NAME: eq-topic-adaptor-service
+SERVICE_VERSION: 1.0.0
+ENVIRONMENT: development

@@ -12,8 +12,34 @@ mapperContainerName: dp-consumer-trfm
 targetTopicName: dpn-consumer-target
 targetContainerName: dp-consumer-target
 scheduleInterval: 60  # schedule interval in seconds
-imageRegistry: ghcr.io/energy-dsi
+
 # ------- AWS Config ------------
 awsEndpointUrl: "<<your specific value>>"
 awsRegion: us-east-1
 awsAccessSecret: aws-access-secret
+
+# Scheduler / Execution
+SCHEDULER_BACKEND: kafka-trigger
+EXECUTION_MODE: manual
+replicaCount: 1
+
+# Pipeline Control Topics
+PIPELINE_CONTROL_TOPIC: dpn-pipeline-control
+PIPELINE_STATUS_TOPIC: dpn-pipeline-status
+
+# Runtime Config
+DRAIN_IDLE_SECS: 15
+topicTaskTimeoutSecs: 60
+
+# Monitoring
+STATSD_PORT: 8125
+
+# OpenTelemetry
+SERVICE_NAME: dpn data pipeline
+SERVICE_VERSION: 1.0.0
+PRODUCT_NAME: consumer-file
+
+OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4317
+OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+OTEL_EXPORTER_OTLP_INSECURE: true
+ENVIRONMENT: development

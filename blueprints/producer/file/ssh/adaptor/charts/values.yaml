@@ -6,16 +6,29 @@ imageName: producer-file-adaptor-eq
 imageTag: ""
 productType: ""
 bootstrapServer: dpn-kafka-src:9092
-srcContainerName: bp-natural-gas-stage
+srcContainerName: ssh-stage
 storageConnectionSecret: producer-file-dp-secret
-mapperTopicName: dpn-producer-bp-natural-gas-raw
-mapperContainerName: bp-natural-gas-raw
-targetTopicName: dpn-producer-bp-natural-gas-target
-targetContainerName: bp-natural-gas-target
+mapperTopicName: dpn-producer-ssh-raw
+mapperContainerName: ssh-raw
+targetTopicName: dpn-producer-ssh-target
+targetContainerName: ssh-target
 scheduleInterval: 60  # schedule interval in seconds
-orgName: BP
+orgName: SSH
 schemaType: ""
+STATSD_HOST: ''
+STATSD_PORT: 8125
+PIPELINE_CONTROL_TOPIC : dpn-pipeline-control
+PIPELINE_STATUS_TOPIC : dpn-pipeline-status
+SCHEDULER_BACKEND: kafka-trigger
+EXECUTION_MODE : manual
+PRODUCT_NAME : ssh
 # ------- AWS Config ------------
 awsEndpointUrl: "<<your specific value>>"
 awsRegion: us-east-1
 awsAccessSecret: aws-access-secret
+OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4317
+OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+OTEL_EXPORTER_OTLP_INSECURE: true
+SERVICE_NAME: dpn data pipeline
+SERVICE_VERSION: 1.0.0
+ENVIRONMENT: development

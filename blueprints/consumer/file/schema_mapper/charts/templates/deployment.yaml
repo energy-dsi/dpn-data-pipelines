@@ -83,4 +83,50 @@ spec:
               secretKeyRef:
                 name: {{ .Values.awsAccessSecret }}
                 key: AWS_SECRET_ACCESS_KEY
+                
+          - name: "SCHEDULER_BACKEND"
+            value: {{ .Values.SCHEDULER_BACKEND | quote }}
+
+          - name: "SCHEDULER_BACKEND"
+            value: {{ .Values.SCHEDULER_BACKEND | quote }}
+
+          - name: "replicaCount"
+            value: {{ .Values.replicaCount | quote }}
+
+          - name: "PIPELINE_CONTROL_TOPIC"
+            value: {{ .Values.PIPELINE_CONTROL_TOPIC | quote }}
+
+          - name: "PIPELINE_STATUS_TOPIC"
+            value: {{ .Values.PIPELINE_STATUS_TOPIC | quote }}
+
+          - name: "DRAIN_IDLE_SECS"
+            value: {{ .Values.DRAIN_IDLE_SECS | quote }}
+
+          - name: "topicTaskTimeoutSecs"
+            value: {{ .Values.topicTaskTimeoutSecs | quote }}
+
+          - name: "STATSD_PORT"
+            value: {{ .Values.STATSD_PORT | quote }}
+
+          - name: "SERVICE_NAME"
+            value: {{ .Values.SERVICE_NAME | quote }}
+
+          - name: "SERVICE_VERSION"
+            value: {{ .Values.SERVICE_VERSION | quote }}
+
+          - name: "PRODUCT_NAME"
+            value: {{ .Values.PRODUCT_NAME }}
+          
+          - name: "OTEL_EXPORTER_OTLP_ENDPOINT"
+            value: {{ .Values.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
+          
+          - name: "OTEL_EXPORTER_OTLP_PROTOCOL"
+            value: {{ .Values.OTEL_EXPORTER_OTLP_PROTOCOL | quote }}
+          
+          - name: "OTEL_EXPORTER_OTLP_INSECURE"
+            value: {{ .Values.OTEL_EXPORTER_OTLP_INSECURE | quote }}
+          
+          - name: "ENVIRONMENT"
+            value: {{ .Values.ENVIRONMENT }}
+            
       automountServiceAccountToken: false

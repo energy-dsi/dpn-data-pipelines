@@ -17,7 +17,7 @@ spec:
       restartPolicy: Always
       containers:
         - name: {{ .Values.name }}
-          image: "{{ .Values.acrName }}.azurecr.io/dsi/{{ .Values.imageName }}:{{ .Values.imageTag }}-{{.Values.productType}}"
+          image: "{{ .Values.acrName }}.azurecr.io/dsi/{{ .Values.imageName }}:{{ .Values.imageTag }}-{{ .Values.productType }}"
           imagePullPolicy: Always
           resources:
             requests:
@@ -37,51 +37,84 @@ spec:
             runAsNonRoot: true
           command: ['python', 'main.py']
           env:
-          - name: "scheduleInterval"
-            value: {{ .Values.scheduleInterval | quote }}
-          - name: "cloudProviderType"
-            value: {{ .Values.cloudProviderType }}
-          - name: "mapperTopicName"
-            value: {{ .Values.mapperTopicName }}
-          - name: "targetTopicName"
-            value: {{ .Values.targetTopicName }}
-          - name: "targetContainerName"
-            value: {{ .Values.targetContainerName }}
-          - name: "srcConnectionString"
-            valueFrom:
-              secretKeyRef:
-                name: {{ .Values.storageConnectionSecret }}
-                key: SRC_CONNECTION_STRING
-          - name: "srcContainerName"
-            value: {{ .Values.srcContainerName }}
-          - name: "mapperContainerName"
-            value: {{ .Values.mapperContainerName }}
-          - name: "bootstrapServer"
-            value: {{ .Values.bootstrapServer }}
-          - name: "productType"
-            value: {{ .Values.productType }}
-          - name: "mapperConnectionString"
-            valueFrom:
-              secretKeyRef:
-                name: {{ .Values.storageConnectionSecret }}
-                key: MAPPER_CONNECTION_STRING
-          - name: "targetConnectionString"
-            valueFrom:
-              secretKeyRef:
-                name: {{ .Values.storageConnectionSecret }}
-                key: TARGET_CONNECTION_STRING
-          - name: "AWS_ENDPOINT_URL"
-            value: {{ .Values.awsEndpointUrl }}
-          - name: "AWS_REGION"
-            value: {{ .Values.awsRegion }}
-          - name: "AWS_ACCESS_KEY_ID"
-            valueFrom:
-              secretKeyRef:
-                name: {{ .Values.awsAccessSecret }}
-                key: AWS_ACCESS_KEY_ID
-          - name: "AWS_SECRET_ACCESS_KEY"
-            valueFrom:
-              secretKeyRef:
-                name: {{ .Values.awsAccessSecret }}
-                key: AWS_SECRET_ACCESS_KEY
+            - name: "scheduleInterval"
+              value: {{ .Values.scheduleInterval | quote }}
+            - name: "cloudProviderType"
+              value: {{ .Values.cloudProviderType | quote }}
+            - name: "mapperTopicName"
+              value: {{ .Values.mapperTopicName | quote }}
+            - name: "targetTopicName"
+              value: {{ .Values.targetTopicName | quote }}
+            - name: "targetContainerName"
+              value: {{ .Values.targetContainerName | quote }}
+            - name: "srcConnectionString"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storageConnectionSecret }}
+                  key: SRC_CONNECTION_STRING
+            - name: "srcContainerName"
+              value: {{ .Values.srcContainerName | quote }}
+            - name: "mapperContainerName"
+              value: {{ .Values.mapperContainerName | quote }}
+            - name: "bootstrapServer"
+              value: {{ .Values.bootstrapServer | quote }}
+            - name: "productType"
+              value: {{ .Values.productType | quote }}
+            - name: "mapperConnectionString"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storageConnectionSecret }}
+                  key: MAPPER_CONNECTION_STRING
+            - name: "targetConnectionString"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storageConnectionSecret }}
+                  key: TARGET_CONNECTION_STRING
+            - name: "AWS_ENDPOINT_URL"
+              value: {{ .Values.awsEndpointUrl | quote }}
+            - name: "AWS_REGION"
+              value: {{ .Values.awsRegion | quote }}
+            - name: "AWS_ACCESS_KEY_ID"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.awsAccessSecret }}
+                  key: AWS_ACCESS_KEY_ID
+            - name: "AWS_SECRET_ACCESS_KEY"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.awsAccessSecret }}
+                  key: AWS_SECRET_ACCESS_KEY
+
+            # ✅ Added missing vars
+            - name: "orgName"
+              value: {{ .Values.orgName | quote }}
+            - name: "schemaType"
+              value: {{ .Values.schemaType | quote }}
+            - name: "STATSD_HOST"
+              value: {{ .Values.STATSD_HOST | quote }}
+            - name: "STATSD_PORT"
+              value: {{ .Values.STATSD_PORT | quote }}
+            - name: "PIPELINE_CONTROL_TOPIC"
+              value: {{ .Values.PIPELINE_CONTROL_TOPIC | quote }}
+            - name: "PIPELINE_STATUS_TOPIC"
+              value: {{ .Values.PIPELINE_STATUS_TOPIC | quote }}
+            - name: "SCHEDULER_BACKEND"
+              value: {{ .Values.SCHEDULER_BACKEND | quote }}
+            - name: "EXECUTION_MODE"
+              value: {{ .Values.EXECUTION_MODE | quote }}
+            - name: "PRODUCT_NAME"
+              value: {{ .Values.PRODUCT_NAME | quote }}
+            - name: "OTEL_EXPORTER_OTLP_ENDPOINT"
+              value: {{ .Values.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
+            - name: "OTEL_EXPORTER_OTLP_PROTOCOL"
+              value: {{ .Values.OTEL_EXPORTER_OTLP_PROTOCOL | quote }}
+            - name: "OTEL_EXPORTER_OTLP_INSECURE"
+              value: {{ .Values.OTEL_EXPORTER_OTLP_INSECURE | quote }}
+            - name: "SERVICE_NAME"
+              value: {{ .Values.SERVICE_NAME | quote }}
+            - name: "SERVICE_VERSION"
+              value: {{ .Values.SERVICE_VERSION | quote }}
+            - name: "ENVIRONMENT"
+              value: {{ .Values.ENVIRONMENT | quote }}
+
       automountServiceAccountToken: false
