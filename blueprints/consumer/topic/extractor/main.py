@@ -56,6 +56,11 @@ class TopicForwarder:
     def __init__(self) -> None:
         """Initialize Kafka producer, topic configuration, and logging."""
 
+        # Same identifier used for the HeartbeatLogger and the scheduler
+        # backend's component_name, so every log this class emits directly
+        # (i.e. not via StepLogger/ctx) still carries a matching component.name.
+        self.component_name = self.SERVICE_NAME
+
         # Initialize OpenTelemetry
         self.tracer = OtelTracer.initialize(
             service_name="consumer-topic-extractor",
@@ -124,6 +129,7 @@ class TopicForwarder:
                 "PRODUCT_NAME": os.getenv("PRODUCT_NAME"),
                 "SCHEDULER_BACKEND": os.getenv("SCHEDULER_BACKEND"),
                 "TOPIC_TASK_TIMEOUT_SECS": os.getenv("TOPIC_TASK_TIMEOUT_SECS"),
+                "component.name": self.component_name,
             }
         )
 
@@ -139,7 +145,7 @@ class TopicForwarder:
         if err:
             self.logger.error(
                 "delivery failed",
-                extra={"error": str(err)}
+                extra={"error": str(err), "component.name": self.component_name}
             )
     @traced(span_name="forward_message")
     def _forward(self, msg, ctx: PipelineContext, step_log: StepLogger) -> None:
@@ -319,7 +325,8 @@ class TopicForwarder:
                         "kafka error",
                         extra={
                             "error": str(kafka_error),
-                            "retry": self.retry_delay
+                            "retry": self.retry_delay,
+                            "component.name": self.component_name,
                         }
                     )
 
@@ -328,7 +335,10 @@ class TopicForwarder:
                     span.record_exception(unexpected_error)
                     self.logger.error(
                         "unexpected",
-                        extra={"error": str(unexpected_error)},
+                        extra={
+                            "error": str(unexpected_error),
+                            "component.name": self.component_name,
+                        },
                         exc_info=True
                     )
 
@@ -409,7 +419,7 @@ if __name__ == "__main__":
     temp_forwarder = TopicForwarder()
     heartbeat = HeartbeatLogger(
         logger=temp_forwarder.logger,
-        component_name="consumer-topic-extractor",
+        component_name=temp_forwarder.component_name,
         metadata={
             "source_topic": temp_forwarder.src_topic,
             "mapper_topic": temp_forwarder.mapper_topic,
@@ -422,5 +432,5 @@ if __name__ == "__main__":
         pipeline_stage="extractor",
         pipeline_type="topic",
         pipeline_role="consumer",
-        component_name="consumer-topic-extractor",
+        component_name=temp_forwarder.component_name,
     )

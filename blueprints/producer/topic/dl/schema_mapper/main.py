@@ -134,11 +134,16 @@ class TopicSchemaMapper:
     - No per-message topic computation
     """
 
+    COMPONENT_PREFIX = "producer-topic-schema-mapper"
+
     def __init__(self) -> None:
         """
         Initialize Kafka clients, metadata, and topics.
         """
         self.logger = Logging().create_logger()
+        self.component_name = (
+            f"{self.COMPONENT_PREFIX}-{os.getenv('PRODUCT_NAME', 'dl')}"
+        )
 
         # Initialize OpenTelemetry
         self.tracer = OtelTracer.initialize(
@@ -210,7 +215,12 @@ class TopicSchemaMapper:
         )
 
         # ✅ Ensure TARGET topic exists
-        self.logger.info(f"Ensuring target topic exists: {self.target_topic}")
+        self.logger.info(
+            f"Ensuring target topic exists: {self.target_topic}",
+            extra={
+                **({"component.name": self.component_name} if self.component_name else {}),
+            },
+        )
         self.km.ensure_exists(self.target_topic)
 
         # Kafka producer client
@@ -232,7 +242,10 @@ class TopicSchemaMapper:
         if err:
             self.logger.error(
                 "Delivery failed",
-                extra={"error": str(err)},
+                extra={
+                    "error": str(err),
+                    **({"component.name": self.component_name} if self.component_name else {}),
+                },
             )
 
     @traced(span_name="process_message")
@@ -406,7 +419,7 @@ class TopicSchemaMapper:
                     span.record_exception(unexpected_error)
                     self.logger.error(
                         "unexpected",
-                        extra={"error": str(unexpected_error)},
+                        extra={"error": str(unexpected_error), **ctx.as_log_extra()},
                         exc_info=True
                     )
 
@@ -480,7 +493,7 @@ if __name__ == "__main__":
     """
     backend = get_backend({"task_id": "trigger_schema_mapper"})
     temp_forwarder = TopicSchemaMapper()
-    component_name=f"producer-topic-schema-mapper-{os.getenv('PRODUCT_NAME', 'dl')}"
+    component_name = temp_forwarder.component_name
     heartbeat = HeartbeatLogger(
         logger=temp_forwarder.logger,
         component_name=component_name,

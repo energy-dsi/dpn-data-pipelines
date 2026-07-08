@@ -126,6 +126,11 @@ class SchemaMapper:
 
     def __init__(self) -> None:
 
+        # Same identifier used for the HeartbeatLogger and the scheduler
+        # backend's component_name, so every log this class emits directly
+      
+        self.component_name = f"producer-file-schema-mapper-{os.getenv('PRODUCT_NAME', 'dl')}"
+
         # Initialize OpenTelemetry
         self.tracer = OtelTracer.initialize(
             service_name="producer-file-schema-mapper",
@@ -204,10 +209,12 @@ class SchemaMapper:
             aws_secret_access_key=self.aws_secret_access_key,
             aws_region=self.aws_region,
             logger=self.logger,
+            component_name=self.component_name,
         )
         self.kafka_trans = KafkaTransection(
             bootstrap_server=self.bootstrap_server,
             logger=self.logger,
+            component_name=self.component_name,
         )
 
     def read_records(self, file: str) -> str:
@@ -215,7 +222,12 @@ class SchemaMapper:
         data = self.data_trans.data_read(cloud_vendor=self.cloud_provider)
         self.logger.info(
             "File content read",
-            extra={"file": file, "provider": self.cloud_provider, "bytes": len(data)},
+            extra={
+                "file": file,
+                "provider": self.cloud_provider,
+                "bytes": len(data),
+                "component.name": self.component_name,
+            },
         )
 
         self.messages_processed.add(1, {
@@ -229,7 +241,11 @@ class SchemaMapper:
     def schema_validation(self, data: str) -> bool:
         self.logger.info(
             "Schema validation (stub – PI3)",
-            extra={"schema_type": self.schema_type, "data_length": len(data)},
+            extra={
+                "schema_type": self.schema_type,
+                "data_length": len(data),
+                "component.name": self.component_name,
+            },
         )
         return True
 
@@ -246,8 +262,13 @@ class SchemaMapper:
         )
         self.logger.info(
             "Schema mapper file_copy result",
-            extra={"source_file": file, "dest_file": self.file_name,
-                   "copied": result.copied, "skipped": result.skipped},
+            extra={
+                "source_file": file,
+                "dest_file": self.file_name,
+                "copied": result.copied,
+                "skipped": result.skipped,
+                "component.name": self.component_name,
+            },
         )
         self.files_moved.add(1, {
             "cloud_provider": self.cloud_provider,
@@ -271,7 +292,11 @@ class SchemaMapper:
             )
             self.logger.info(
                 "Target Kafka message published",
-                extra={"topic": self.target_kafka_topic, "file": self.file_name},
+                extra={
+                    "topic": self.target_kafka_topic,
+                    "file": self.file_name,
+                    "component.name": self.component_name,
+                },
             )
 
 
@@ -403,7 +428,7 @@ def run(ctx: PipelineContext) -> None:
                 "targetTopicName":     mapper.target_kafka_topic,
                 "mapperContainerName": mapper.source_container_name,
                 "targetContainerName": mapper.target_container_name,
-                "PRODUCT_NAME":        os.getenv('PRODUCT_NAME', 'dl'),
+                "PRODUCT_NAME":        os.getenv("PRODUCT_NAME", "dl"),
                 "SCHEDULER_BACKEND":   os.getenv("SCHEDULER_BACKEND", "standalone"),
             },
         )
@@ -524,7 +549,11 @@ def _run_drain_mode(
                 except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                     mapper.logger.warning(
                         "Malformed mapper message — skipping",
-                        extra={"event.name": "pipeline.mapper.bad_message", "error": str(exc)},
+                        extra={
+                            "event.name": "pipeline.mapper.bad_message",
+                            "error": str(exc),
+                            **ctx.as_log_extra(),
+                        },
                     )
 
         finally:
@@ -577,10 +606,9 @@ def _run_continuous_mode(
 
 if __name__ == "__main__":  # pragma: no cover
     temp_mapper = SchemaMapper()
-    component_name=f"producer-file-schema-mapper-{os.getenv('PRODUCT_NAME', 'dl')}"
     heartbeat = HeartbeatLogger(
         logger=temp_mapper.logger,
-        component_name=component_name,
+        component_name=temp_mapper.component_name,
         metadata={
             "source_topic": temp_mapper.source_kafka_topic,
             "target_topic": temp_mapper.target_kafka_topic,
@@ -594,5 +622,5 @@ if __name__ == "__main__":  # pragma: no cover
         pipeline_stage="schema_mapper",
         pipeline_type="file",
         pipeline_role="producer",
-        component_name=component_name
+        component_name=temp_mapper.component_name,
     )

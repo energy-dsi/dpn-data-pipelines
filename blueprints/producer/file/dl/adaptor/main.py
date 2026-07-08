@@ -116,6 +116,11 @@ class AdaptorFileProcess:
 
     def __init__(self) -> None:
 
+        # Same identifier used for the HeartbeatLogger and the scheduler
+        # backend's component_name, so every log this class emits directly
+        
+        self.component_name = f"producer-file-adaptor-{os.getenv('PRODUCT_NAME', 'dl')}"
+
         # Initialize OpenTelemetry
         self.tracer = OtelTracer.initialize(
             service_name="producer-file-adaptor",
@@ -183,7 +188,11 @@ class AdaptorFileProcess:
 
         self.logger.info(
             "Configuration validation successful",
-            extra={"event.name": "config.validation.success", "cloud.provider": self.cloud_provider},
+            extra={
+                "event.name": "config.validation.success",
+                "cloud.provider": self.cloud_provider,
+                "component.name": self.component_name,
+            },
         )
 
         self.data_trans = DataTransection(
@@ -198,10 +207,12 @@ class AdaptorFileProcess:
             aws_secret_access_key=self.aws_secret_access_key,
             aws_region=self.aws_region,
             logger=self.logger,
+            component_name=self.component_name,
         )
         self.kafka_trans = KafkaTransection(
             bootstrap_server=self.bootstrap_server,
             logger=self.logger,
+            component_name=self.component_name,
         )
 
     @traced(span_name="list_files")
@@ -222,8 +233,12 @@ class AdaptorFileProcess:
 
             self.logger.info(
                 "Source files discovered",
-                extra={"count": len(source_files), "files": source_files},
-            )           
+                extra={
+                    "count": len(source_files),
+                    "files": source_files,
+                    "component.name": self.component_name,
+                },
+            )
             return source_files
 
     @traced(span_name="process_file")
@@ -240,7 +255,13 @@ class AdaptorFileProcess:
                 result = self.data_trans.file_copy(cloud_vendor=self.cloud_provider, file_name=file)
                 self.logger.info(
                     "Adaptor file_copy result",
-                    extra={"file": file, "copied": result.copied, "skipped": result.skipped, "reason": result.reason},
+                    extra={
+                        "file": file,
+                        "copied": result.copied,
+                        "skipped": result.skipped,
+                        "reason": result.reason,
+                        "component.name": self.component_name,
+                    },
                 )
 
                 duration_ms = int(
@@ -302,12 +323,16 @@ class AdaptorFileProcess:
 
             self.logger.info(
                 "Kafka message published",
-                extra={"topic": self.target_kafka_topic, "file": file_name},
+                extra={
+                    "topic": self.target_kafka_topic,
+                    "file": file_name,
+                    "component.name": self.component_name,
+                },
             )
         else:
             self.logger.info(
                 "Kafka message suppressed — file not copied",
-                extra={"file": file_name},
+                extra={"file": file_name, "component.name": self.component_name},
             )
 
 
@@ -349,7 +374,7 @@ def run(ctx: PipelineContext) -> None:
                 "srcContainerName":    adaptor.source_container_name,
                 "mapperContainerName": adaptor.target_container_name,
                 "bootstrapServer":     adaptor.bootstrap_server,
-                "PRODUCT_NAME":        os.getenv('PRODUCT_NAME', 'dl'),
+                "PRODUCT_NAME":        os.getenv("PRODUCT_NAME", "dl"),
                 "SCHEDULER_BACKEND":   os.getenv("SCHEDULER_BACKEND", "standalone"),
             },
         )
@@ -435,10 +460,9 @@ if __name__ == "__main__":  # pragma: no cover
     #   SCHEDULER_BACKEND=interval         ← self-scheduling fallback
     #   SCHEDULER_BACKEND=standalone       ← one-shot (default)
     temp_proc = AdaptorFileProcess()
-    component_name=f"producer-file-adaptor-{ os.getenv('PRODUCT_NAME', 'dl')}"
     heartbeat = HeartbeatLogger(
         logger=temp_proc.logger,
-        component_name=component_name,
+        component_name=temp_proc.component_name,
         metadata={
             "kafka_topic": temp_proc.target_kafka_topic,
             "src_container": temp_proc.source_container_name,
@@ -454,5 +478,5 @@ if __name__ == "__main__":  # pragma: no cover
         pipeline_stage="adaptor",
         pipeline_type="file",
         pipeline_role="producer",
-        component_name=f"producer-file-adaptor-{ os.getenv('PRODUCT_NAME', 'dl')}",
+        component_name=temp_proc.component_name,
     )

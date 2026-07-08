@@ -71,6 +71,11 @@ class ExtractorFileProcess:
         Initialize configuration, logger, and dependencies.
         """
 
+        # Same identifier used for the HeartbeatLogger and the scheduler
+        # backend's component_name, so every log this class emits directly
+        # (i.e. not via StepLogger/ctx) still carries a matching component.name.
+        self.component_name = "consumer-file-extractor"
+
         # Initialize OpenTelemetry
         self.tracer = OtelTracer.initialize(
             service_name="consumer-file-extractor",
@@ -183,11 +188,13 @@ class ExtractorFileProcess:
             aws_secret_access_key=self.aws_secret,
             aws_region=self.aws_region,
             logger=self.logger,
+            component_name=self.component_name,
         )
 
         self.kafka_trans = KafkaTransection(
             bootstrap_server=self.bootstrap,
             logger=self.logger,
+            component_name=self.component_name,
         )
 
     # -------------------------------------------------------------------------
@@ -218,7 +225,7 @@ class ExtractorFileProcess:
 
             self.logger.info(
                 "files discovered",
-                extra={"count": len(files)},
+                extra={"count": len(files), "component.name": self.component_name},
             )
             return files
         
@@ -265,7 +272,11 @@ class ExtractorFileProcess:
 
                 self.logger.info(
                     "file_copy",
-                    extra={"file": file, "copied": result.copied},
+                    extra={
+                        "file": file,
+                        "copied": result.copied,
+                        "component.name": self.component_name,
+                    },
                 )
 
                 # Capture this span's context so publish_event() below can
@@ -475,7 +486,7 @@ if __name__ == "__main__":
     temp_proc = ExtractorFileProcess()
     heartbeat = HeartbeatLogger(
         logger=temp_proc.logger,
-        component_name="consumer-file-extractor",
+        component_name=temp_proc.component_name,
         metadata={
             "kafka_topic": temp_proc.kafka_topic,
             "src_container": temp_proc.src_container,
@@ -489,5 +500,5 @@ if __name__ == "__main__":
         pipeline_stage="extractor",
         pipeline_type="file",
         pipeline_role="consumer",
-        component_name="consumer-file-extractor",
+        component_name=temp_proc.component_name,
     )

@@ -100,11 +100,15 @@ class TopicForwarder:
     """
 
     SERVICE_NAME = "producer-topic-ssh-adaptor"
+    COMPONENT_PREFIX = "producer-topic-adaptor"
 
     def __init__(self) -> None:
         """Initialize Kafka producer, topics, and configuration."""
 
         self.logger = Logging().create_logger()
+        self.component_name = (
+            f"{self.COMPONENT_PREFIX}-{os.getenv('PRODUCT_NAME', 'ssh')}"
+        )
 
         # Initialize OpenTelemetry
         self.tracer = OtelTracer.initialize(
@@ -168,6 +172,7 @@ class TopicForwarder:
             extra={
                 "srcTopicName": self.src_topic,
                 "mapperTopicName": self.mapper_topic,
+                **({"component.name": self.component_name} if self.component_name else {}),
             },
         )
 
@@ -198,7 +203,10 @@ class TopicForwarder:
         if err:
             self.logger.error(
                 "Delivery failed",
-                extra={"error": str(err)},
+                extra={
+                    "error": str(err),
+                    **({"component.name": self.component_name} if self.component_name else {}),
+                },
             )
 
     @traced(span_name="forward_message")
@@ -368,7 +376,11 @@ class TopicForwarder:
                     span.record_exception(exc)
                     self.logger.error(
                         "Kafka error",
-                        extra={"error": str(exc), "retry": self.retry_delay},
+                        extra={
+                            "error": str(exc),
+                            "retry": self.retry_delay,
+                            **ctx.as_log_extra(),
+                        },
                     )
 
                 except Exception as exc:
@@ -376,7 +388,7 @@ class TopicForwarder:
                     span.record_exception(exc)
                     self.logger.error(
                         "Unexpected error",
-                        extra={"error": str(exc)},
+                        extra={"error": str(exc), **ctx.as_log_extra()},
                         exc_info=True,
                     )
 
@@ -420,7 +432,7 @@ def run(ctx: PipelineContext) -> None:
                 "srcTopicName": forwarder.src_topic,
                 "mapperTopicName": forwarder.mapper_topic,
                 "SCHEDULER_BACKEND": os.getenv("SCHEDULER_BACKEND", "standalone"),
-                "PRODUCT_NAME": os.getenv('PRODUCT_NAME', 'ssh'),
+                "PRODUCT_NAME": os.getenv("PRODUCT_NAME", "ssh"),
             },
         )
 
@@ -456,7 +468,7 @@ if __name__ == "__main__":
     """
     backend = get_backend({"task_id": "trigger_adaptor"})
     temp_forwarder = TopicForwarder()
-    component_name=f"producer-topic-adaptor-{ os.getenv('PRODUCT_NAME', 'ssh')}"
+    component_name = temp_forwarder.component_name
     heartbeat = HeartbeatLogger(
         logger=temp_forwarder.logger,
         component_name=component_name,

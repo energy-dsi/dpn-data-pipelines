@@ -61,6 +61,11 @@ class SchemaMapper:
     """
 
     def __init__(self):
+        # Same identifier used for the HeartbeatLogger and the scheduler
+        # backend's component_name, so every log this class emits directly
+        # (i.e. not via StepLogger/ctx) still carries a matching component.name.
+        self.component_name = "consumer-file-schema-mapper"
+
         # Initialize OpenTelemetry
         self.tracer = OtelTracer.initialize(
             service_name="consumer-file-schema-mapper",
@@ -156,12 +161,14 @@ class SchemaMapper:
             aws_secret_access_key=self.aws_secret,
             aws_region=self.aws_region,
             logger=self.logger,
+            component_name=self.component_name,
         )
 
         # Kafka transaction handler
         self.kafka_trans = KafkaTransection(
             bootstrap_server=self.bootstrap,
-            logger=self.logger
+            logger=self.logger,
+            component_name=self.component_name,
         )
 
     def read_file(self, file):
@@ -171,7 +178,10 @@ class SchemaMapper:
     def validate(self, data):
         self.logger.info(
             "schema validation (stub)",
-            extra={"schema_type": self.schema_type}
+            extra={
+                "schema_type": self.schema_type,
+                "component.name": self.component_name,
+            }
         )
         return True
 
@@ -453,7 +463,7 @@ if __name__ == "__main__":
     temp_mapper = SchemaMapper()
     heartbeat = HeartbeatLogger(
         logger=temp_mapper.logger,
-        component_name="consumer-file-schema-mapper",
+        component_name=temp_mapper.component_name,
         metadata={
             "source_topic": temp_mapper.source_topic,
             "target_topic": temp_mapper.target_topic,
@@ -466,5 +476,5 @@ if __name__ == "__main__":
         pipeline_stage="schema_mapper",
         pipeline_type="file",
         pipeline_role="consumer",
-        component_name="consumer-file-schema-mapper",
+        component_name=temp_mapper.component_name,
     )

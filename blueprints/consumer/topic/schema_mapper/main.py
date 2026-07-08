@@ -62,6 +62,11 @@ class TopicSchemaMapper:
     """
 
     def __init__(self) -> None:
+        # Same identifier used for the HeartbeatLogger and the scheduler
+        # backend's component_name, so every log this class emits directly
+        # (i.e. not via StepLogger/ctx) still carries a matching component.name.
+        self.component_name = "consumer-topic-mapper"
+
         # Initialize OpenTelemetry
         self.tracer = OtelTracer.initialize(
             service_name="consumer-topic-mapper",
@@ -163,6 +168,7 @@ class TopicSchemaMapper:
                     "schema_type": schema_type,
                     "org_name": org_name,
                     "product_type": product_type,
+                    "component.name": self.component_name,
                 },
             )
             self.target_topic = ""  # ensures no produce
@@ -181,18 +187,27 @@ class TopicSchemaMapper:
         if resolved != self.target_topic:
             self.target_topic = resolved
 
-            self.logger.info(f"Ensuring topic exists: {self.target_topic}")
+            self.logger.info(
+                f"Ensuring topic exists: {self.target_topic}",
+                extra={"component.name": self.component_name},
+            )
 
             try:
                 self.km.ensure_exists(self.target_topic)
             except Exception as e:
-                self.logger.error(f"Topic creation failed: {e}")
+                self.logger.error(
+                    f"Topic creation failed: {e}",
+                    extra={"component.name": self.component_name},
+                )
 
 
     def _on_delivery(self, err, msg) -> None:
         """Kafka delivery callback"""
         if err:
-            self.logger.error("delivery failed", extra={"error": str(err)})
+            self.logger.error(
+                "delivery failed",
+                extra={"error": str(err), "component.name": self.component_name},
+            )
 
 
     @traced(span_name="process_message")
@@ -232,7 +247,10 @@ class TopicSchemaMapper:
 
                     # Skip if invalid
                     if not self.target_topic:
-                        self.logger.warning("Skipping produce (no valid target topic)")
+                        self.logger.warning(
+                            "Skipping produce (no valid target topic)",
+                            extra={"component.name": self.component_name},
+                        )
                         span.set_attribute("process.status", "skipped")
                         return
 
@@ -358,7 +376,11 @@ class TopicSchemaMapper:
                     span.record_exception(kafka_error)
                     self.logger.error(
                         "kafka error",
-                        extra={"error": str(kafka_error), "retry": self.retry_delay}
+                        extra={
+                            "error": str(kafka_error),
+                            "retry": self.retry_delay,
+                            "component.name": self.component_name,
+                        }
                     )
 
                 except Exception as unexpected_error:
@@ -366,7 +388,10 @@ class TopicSchemaMapper:
                     span.record_exception(unexpected_error)
                     self.logger.error(
                         "unexpected",
-                        extra={"error": str(unexpected_error)},
+                        extra={
+                            "error": str(unexpected_error),
+                            "component.name": self.component_name,
+                        },
                         exc_info=True,
                     )
 
@@ -426,7 +451,7 @@ if __name__ == "__main__":
     temp_mapper = TopicSchemaMapper()
     heartbeat = HeartbeatLogger(
         logger=temp_mapper.logger,
-        component_name="consumer-topic-mapper",
+        component_name=temp_mapper.component_name,
         metadata={
             "source_topic": temp_mapper.src_topic,
             "mapper_topic": temp_mapper.mapper_topic,
@@ -439,7 +464,7 @@ if __name__ == "__main__":
         pipeline_stage="schema_mapper",
         pipeline_type="topic",
         pipeline_role="consumer",
-        component_name="consumer-topic-mapper",
+        component_name=temp_mapper.component_name,
     )
 
 # {"product_type":"eqbdpggas","processed_at":"2026-06-02T14:04:06.603385+00:00","org_name":"neso","schema_type":"eqbd"}
