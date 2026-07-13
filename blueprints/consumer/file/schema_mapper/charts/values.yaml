@@ -21,7 +21,7 @@ awsAccessSecret: aws-access-secret
 
 # Scheduler / Execution
 SCHEDULER_BACKEND: kafka-trigger
-SCHEDULER_BACKEND: manual
+EXECUTION_MODE: manual             # manual = disabled automatic execution: manual
 replicaCount: 1
 
 # Pipeline Control Topics
