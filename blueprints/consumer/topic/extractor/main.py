@@ -1,5 +1,12 @@
 # Copyright DSI Project — Apache 2.0
 # v1.0.0 Initial | v1.1.0 Kafka trigger + StepLogger 2026-05-26
+# +---------+----------------------------------------------------------+---------------+-------------+
+# | Version | Description                                              | Change Owner  | Change Date |
+# +---------+----------------------------------------------------------+---------------+-------------+
+# | 1.0.0   | Initial version                                          | DSI Team      | 2026-05-01  |
+# | 1.1.0   | Kafka Trigger and StepLogger Integration                 | DSI Team      | 2026-05-26  |
+# | 1.2.0   | OTEL Collector Integration                               | DSI Team      | 2026-06-26  |
+# +---------+----------------------------------------------------------+---------------+-------------+
 
 """
 /home/claude/dpn-complete/consumer/topic/extractor/main.py
