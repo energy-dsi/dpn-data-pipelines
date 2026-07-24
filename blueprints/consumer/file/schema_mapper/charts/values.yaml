@@ -7,11 +7,10 @@ imageTag: ""
 bootstrapServer: dpn-kafka-target:9092
 srcContainerName: dp-consumer-stage
 storageConnectionSecret: consumer-file-dp-secret
-mapperTopicName: dpn-consumer-extr
+mapperTopicName: dp-consumer-file-trfm
 mapperContainerName: dp-consumer-trfm
-targetTopicName: dpn-consumer-target
+targetTopicName: dp-consumer-file-target
 targetContainerName: dp-consumer-target
-imageRegistry: ghcr.io/energy-dsi
 scheduleInterval: 60  # schedule interval in seconds
 
 # ------- AWS Config ------------
@@ -21,7 +20,7 @@ awsAccessSecret: aws-access-secret
 
 # Scheduler / Execution
 SCHEDULER_BACKEND: kafka-trigger
-EXECUTION_MODE: manual             # manual = disabled automatic execution: manual
+EXECUTION_MODE: manual
 replicaCount: 1
 
 # Pipeline Control Topics

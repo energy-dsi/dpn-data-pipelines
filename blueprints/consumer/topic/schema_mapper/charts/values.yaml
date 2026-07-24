@@ -3,8 +3,8 @@
 # ============================================================
 bootstrapServer: dpn-kafka-target:9092   # Kafka broker endpoint (local setup)
 
-mapperTopicName: dpn-consumer-topic-trfm   # Topic for transformed/mapper data
-srcTopicName: dpn-consumer-topic-stage      # Source topic consumed by adaptor
+mapperTopicName: dp-consumer-topic-trfm  # Topic for transformed/mapper data
+srcTopicName: dp-consumer-topic-stage      # Source topic consumed by adaptor
 srcGroupId: consumer_topic_eqbd_pg_gas_test   # Consumer group ID
 
 

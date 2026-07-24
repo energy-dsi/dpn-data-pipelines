@@ -7,9 +7,9 @@ imageTag: ""
 bootstrapServer: dpn-kafka-target:9092
 srcContainerName: dp-consumer-stage
 storageConnectionSecret: consumer-file-dp-secret
-mapperTopicName: dpn-consumer-extr
+mapperTopicName: dp-consumer-file-trfm
 mapperContainerName: dp-consumer-trfm
-targetTopicName: dpn-consumer-target
+targetTopicName: dp-consumer-file-target
 targetContainerName: dp-consumer-target
 scheduleInterval: 60  # schedule interval in seconds
 
