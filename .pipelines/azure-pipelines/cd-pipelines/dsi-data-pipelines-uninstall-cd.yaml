@@ -1,0 +1,280 @@
+trigger:
+- none
+
+pool:
+  name: '<<YOUR AGENT POOL>>'
+
+parameters:
+- name: environment
+  displayName: 'Select Environment'
+  type: string
+  default: dev
+  values:
+    - dev
+    - devtest
+    - test
+    - pdev
+    - ptest
+    - puat
+- name: cluster
+  displayName: 'Choose DPN Cluster'
+  type: string
+  default: dpn01
+  values:
+    - dpn01
+    - dpn02
+- name: ServiceConnection
+  displayName: 'ServiceConnection details'
+  type: string
+  default: 'sc-dpn-dev-001'
+  values:
+    - sc-dpn-dev-001
+    - sc-dpn-dev-002
+    - sc-dpn-test-001
+    - sc-dpn-test-002
+    - sc-dpn-pdev-ppd-001
+    - sc-dpn-ptest-ppd-001
+    - sc-dpn-puat-ppd-001
+- name: configType
+  displayName: 'Select Config Type'
+  type: string
+  values:
+    - producer
+    - consumer
+
+# NOTE: this is the single uninstall pipeline for every environment.
+# pdev/ptest/puat only have one DPN, so leave `cluster` at its default
+# (dpn01) when targeting them -- PARAMETERS_FILE resolves to
+# config/pdev-dpn01.json, etc.
+variables:
+  PARAMETERS_FILE: '.pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.cluster }}.json'
+  CONFIG_TYPE: ${{ parameters.configType }}
+  ${{ if in(parameters.environment, 'pdev', 'ptest', 'puat') }}:
+    APPROVAL_GROUP: dsi-ppd
+  ${{ else }}:
+    APPROVAL_GROUP: dsi-devtest
+
+stages:
+# --------------------------------------------------
+# Stage 0 — Pre-Uninstall Checklist
+# --------------------------------------------------
+- stage: Precheck
+  displayName: 'Pre-Uninstall Checklist'
+  jobs:
+  - job: Precheck
+    steps:
+    - script: |
+        echo "CONFIRM BEFORE PROCEEDING:"
+        echo "1. Pipelines stopped"
+        echo "2. No active file ingestion"
+        echo "3. Kafka topics drained"
+        echo "4. Backups taken if required"
+      displayName: 'Checklist Acknowledgement'
+
+# --------------------------------------------------
+# Stage 1 — Load Config & AKS Auth
+# --------------------------------------------------
+- stage: Prepare
+  displayName: 'Load Config & AKS Auth'
+  dependsOn: Precheck
+  jobs:
+  - job: Prepare
+    steps:
+    - script: |
+        set -e
+
+        CONFIG_FILE="$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"
+        if [ ! -f "$CONFIG_FILE" ]; then
+          echo "ERROR: Config file not found $CONFIG_FILE"
+          exit 1
+        fi
+
+        echo "Loading environment variables"
+        for key in $(jq -r 'keys_unsorted | .[]' "$CONFIG_FILE"); do
+          value=$(jq -r ".\"$key\"" "$CONFIG_FILE")
+          echo "##vso[task.setvariable variable=$key]$value"
+        done
+      displayName: 'Read Environment Variables'
+
+    - task: AzureCLI@2
+      displayName: 'AKS Authentication'
+      inputs:
+        azureSubscription: ${{ parameters.ServiceConnection }}
+        scriptType: bash
+        addSpnToEnvironment: true
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+
+          az aks install-cli
+
+          az aks get-credentials \
+            --resource-group $(RESOURCE_GROUP) \
+            --name $(AKS_CLUSTER) \
+            --overwrite-existing
+
+          kubelogin convert-kubeconfig -l azurecli
+
+          echo "AKS context ready"
+
+
+# -----------------------------
+# Stage 2 — Approval
+# -----------------------------
+- stage: Approval
+  displayName: "Approval – Confirm Deletion Scope"
+  dependsOn: Prepare
+  jobs:
+  - deployment: ApproveUninstall
+    displayName: "Approve DPN Helm Uninstall"
+    ${{ if in(parameters.environment, 'pdev', 'ptest', 'puat') }}:
+      environment: dsi-ppd
+    ${{ else }}:
+      environment: dsi-devtest
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - script: |
+              echo "===================================================="
+              echo "DPN PLATFORM UNINSTALL — APPROVAL REQUIRED"
+              echo "===================================================="
+              echo ""
+              echo "Environment    : ${{ parameters.environment }}"
+              echo "Approval Group : $(APPROVAL_GROUP)"
+              echo ""
+              echo "The following Helm releases WILL be deleted"
+              echo "ONCE APPROVAL IS GRANTED:"
+              echo ""
+              echo "Filtering rule:"
+              echo "  Helm releases starting with: consumer/ producer"
+              echo ""
+            displayName: "Approval Context Header"
+
+          - task: AzureCLI@2
+            displayName: "Preview Helm Releases (READ‑ONLY)"
+            inputs:
+              azureSubscription: "${{ parameters.ServiceConnection }}"
+              addSpnToEnvironment: true
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+
+                az aks install-cli
+                az aks get-credentials \
+                  --resource-group $(RESOURCE_GROUP) \
+                  --name $(AKS_CLUSTER) \
+                  --overwrite-existing
+                kubelogin convert-kubeconfig -l azurecli
+
+                echo ""
+                echo "Helm releases that will be deleted:"
+                echo "----------------------------------------------------"
+
+                if [[ "$(CONFIG_TYPE)" == "consumer" ]]; then
+                  helm list -n $(NAMESPACE) -q | grep consumer || echo "None found"
+                else
+                  helm list -n $(NAMESPACE) -q | grep producer || echo "None found"
+                fi
+
+                echo ""
+                echo "----------------------------------------------------"
+                echo "NO resources have been deleted in this stage."
+                echo "Deletion will occur ONLY after approval."
+                echo "===================================================="
+
+# -----------------------------
+# Stage 3 — Helm Uninstall
+# -----------------------------
+- stage: Uninstall
+  dependsOn: Approval
+  jobs:
+  - job: Uninstall
+    steps:
+    - script: |
+        CONFIG_FILE="$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"
+        for key in $(jq -r 'keys_unsorted | .[]' "$CONFIG_FILE"); do
+          echo "##vso[task.setvariable variable=$key]$(jq -r ".\"$key\"" "$CONFIG_FILE")"
+        done
+      displayName: 'Reload Environment Variables'
+
+    - task: AzureCLI@2
+      displayName: 'Helm Uninstall'
+      inputs:
+        azureSubscription: ${{ parameters.ServiceConnection }}
+        addSpnToEnvironment: true
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          az aks get-credentials \
+            --resource-group $(RESOURCE_GROUP) \
+            --name $(AKS_CLUSTER) \
+            --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+
+          if [[ "$(CONFIG_TYPE)" == "consumer" ]]; then
+            Release=$(helm list -n $(NAMESPACE) -q | grep consumer || true)
+          else
+            Release=$(helm list -n $(NAMESPACE) -q | grep producer || true)
+          fi
+
+          echo "$Release"
+# -----------------------------
+# Stage 4 — Verify
+# -----------------------------
+- stage: Verify
+  displayName: 'Final Verification'
+  dependsOn: Uninstall
+  jobs:
+  - job: Verify
+    steps:
+    - script: |
+        set -e
+
+        CONFIG_FILE="$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"
+        if [ ! -f "$CONFIG_FILE" ]; then
+          echo "ERROR: Config file not found: $CONFIG_FILE"
+          exit 1
+        fi
+
+        for key in $(jq -r 'keys_unsorted | .[]' "$CONFIG_FILE"); do
+          value=$(jq -r ".\"$key\"" "$CONFIG_FILE")
+          echo "##vso[task.setvariable variable=$key]$value"
+          echo "Loaded $key=$value"
+        done
+      displayName: 'Load Environment Variables'
+
+    - task: AzureCLI@2
+      displayName: 'AKS Authentication'
+      inputs:
+        azureSubscription: ${{ parameters.ServiceConnection }}
+        addSpnToEnvironment: true
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+
+          az aks install-cli
+          az aks get-credentials \
+            --resource-group $(RESOURCE_GROUP) \
+            --name $(AKS_CLUSTER) \
+            --overwrite-existing
+
+          kubelogin convert-kubeconfig -l azurecli
+
+    - script: |
+        echo "Using namespace: $(NAMESPACE)"
+
+        echo "Deployments:"
+        kubectl get deployments -n $(NAMESPACE)
+
+        echo "Pods:"
+        kubectl get pods -n $(NAMESPACE)
+
+        echo "Helm Releases:"
+        helm list -n $(NAMESPACE)
+
+        echo "Services preserved:"
+        kubectl get svc -n $(NAMESPACE)
+      displayName: 'Verification'

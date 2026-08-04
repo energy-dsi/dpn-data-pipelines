@@ -1,0 +1,341 @@
+trigger:
+  - none
+
+pool:
+  name: "<<YOUR AGENT POOL>>"
+
+parameters:
+  - name: ServiceConnection
+    displayName: "ServiceConnection details"
+    type: string
+    default: "sc-dpn-dev-001"
+    values:
+      - sc-dpn-dev-001
+      - sc-dpn-dev-002
+      - sc-dpn-test-001
+      - sc-dpn-test-002
+      - sc-dpn-pdev-ppd-001
+      - sc-dpn-ptest-ppd-001
+      - sc-dpn-puat-ppd-001
+
+  - name: environment
+    displayName: "Select Environment"
+    type: string
+    default: dev
+    values:
+      - dev
+      - devtest
+      - test
+      - pdev
+      - ptest
+      - puat
+
+  - name: cluster
+    displayName: "Choose DPN Cluster"
+    type: string
+    default: dpn01
+    values:
+      - dpn01
+      - dpn02
+
+  - name: prefetchImages
+    displayName: "Mirror base images to GHCR"
+    type: boolean
+    default: false
+
+  - name: releaseTag
+    type: string
+    displayName: 'Release Tag for Image'
+
+variables:
+  PROJECT_NAME: dsi-data-pipelines
+  PARAMETERS_FILE: ".pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.cluster }}.json"
+  HELM_DIR: charts/airflow
+  RELEASE_NAME: dpn-airflow
+  VALUES_FILE: "$(HELM_DIR)/values-${{ parameters.environment }}-${{ parameters.cluster }}.yaml"
+  # Two approver groups: dsi-devtest for dev/devtest/test, dsi-ppd for
+  # pdev/ptest/puat. Resolved at compile time; also used directly to bind
+  # the Deploy job's `environment:` so the approval check is registered
+  # correctly (not via a runtime macro).
+  ${{ if in(parameters.environment, 'pdev', 'ptest', 'puat') }}:
+    APPROVAL_GROUP: dsi-ppd
+  ${{ else }}:
+    APPROVAL_GROUP: dsi-devtest
+  RELEASE_TAG: ${{ parameters.releaseTag }}
+  GHCR_REGISTRY: "ghcr.io"
+  GHCR_NAMESPACE: "energy-dsi"
+  GHCR_SERVICE_CONNECTION: "github-container-registry"
+  GHCR_PULL_SECRET_NAME: "ghcr-creds"
+  # Custom Airflow image name/tag pushed by this pipeline
+  GHCR_AIRFLOW_IMAGE_NAME: "dpn-airflow"
+
+stages:
+  - stage: PrefetchBaseImages
+    displayName: "Mirror Base Images to GHCR (push disabled)"
+    condition: eq('${{ parameters.prefetchImages }}', true)
+
+    jobs:
+      - job: Prefetch
+        displayName: "Mirror Base Images to GHCR (push disabled)"
+        pool:
+          name: "<<YOUR AGENT POOL>>"
+
+        steps:
+          - checkout: self
+          - script: |
+              set -euo pipefail
+              echo "Loading config: $(PARAMETERS_FILE)"
+              echo "Value file : $(VALUES_FILE)"
+
+              for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+                value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+                echo "##vso[task.setvariable variable=$param]$value"
+              done
+            displayName: "Load Environment Config"
+
+          - task: Docker@2
+            displayName: "Login to GHCR"
+            inputs:
+              command: login
+              containerRegistry: $(GHCR_SERVICE_CONNECTION)
+
+          - script: |
+              set -euo pipefail
+
+              echo "===== MIRROR BASE IMAGES TO GHCR ====="
+
+              # source_image|target_name:tag
+              BASE_IMAGES=(
+                "redis:7.2|redis:7.2"
+                "postgres:16-alpine|postgres:16-alpine"
+                "prom/prometheus:v2.52.0|prometheus:v2.52.0"
+                "grafana/grafana:10.4.2|grafana:10.4.2"
+                "prom/statsd-exporter:v0.26.1|statsd-exporter:v0.26.1"
+                "apache/airflow:2.9.1|apache-airflow:2.9.3"
+                "alpine:3.22|alpine:3.22"
+              )
+
+              for ENTRY in "${BASE_IMAGES[@]}"; do
+                SOURCE_IMAGE="${ENTRY%%|*}"
+                TARGET_REF="${ENTRY##*|}"
+                TARGET="$(GHCR_REGISTRY)/$(GHCR_NAMESPACE)/${TARGET_REF}"
+
+                echo "Processing $SOURCE_IMAGE → $TARGET"
+
+                docker pull "$SOURCE_IMAGE"
+                docker tag "$SOURCE_IMAGE" "$TARGET"
+                # PUSH DISABLED: this pipeline must NOT push any images to GHCR.
+                echo "Push disabled - NOT pushing $TARGET to GHCR."
+                # docker push "$TARGET"
+              done
+
+              echo "===== MIRROR COMPLETE (no images pushed) ====="
+
+  - stage: BuildAirflowImage
+    displayName: "Build Airflow Image (no push to GHCR)"
+
+    jobs:
+      - job: Build
+        displayName: "Docker Build (no push)"
+
+        pool:
+          name: "<<YOUR AGENT POOL>>"
+
+        steps:
+          - checkout: self
+
+          - script: |
+              set -euo pipefail
+
+              echo "Loading config: $(PARAMETERS_FILE)"
+
+              for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+                value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+                echo "##vso[task.setvariable variable=$param]$value"
+              done
+            displayName: "Load Environment Config"
+
+          - task: Docker@2
+            displayName: "Login to GHCR"
+            inputs:
+              command: login
+              containerRegistry: $(GHCR_SERVICE_CONNECTION)
+
+          - script: |
+              set -euo pipefail
+
+              # Tag can be overridden per-run via the releaseTag parameter;
+              # defaults to matching the Airflow/Python version baked into the image
+              # e.g. 2.9.3-python3.11
+              IMAGE_TAG="$(RELEASE_TAG)"
+              FULL_IMAGE="$(GHCR_REGISTRY)/$(GHCR_NAMESPACE)/$(GHCR_AIRFLOW_IMAGE_NAME):$IMAGE_TAG"
+
+              echo "Building image: $FULL_IMAGE"
+
+              docker build \
+                -f docker/airflow/Dockerfile.airflow \
+                -t $FULL_IMAGE .
+
+              # PUSH DISABLED: this pipeline must NOT push any images to GHCR.
+              echo "Built $FULL_IMAGE but NOT pushing (GHCR push disabled)."
+              # docker push $FULL_IMAGE
+
+              echo "##vso[task.setvariable variable=AIRFLOW_IMAGE]$FULL_IMAGE"
+
+            displayName: "Build Docker Image (no push)"
+
+  - stage: Deploy
+    displayName: "Deploy Airflow"
+    jobs:
+      - deployment: DeployAirflow
+        displayName: "Helm Deploy"
+        ${{ if in(parameters.environment, 'pdev', 'ptest', 'puat') }}:
+          environment: dsi-ppd
+        ${{ else }}:
+          environment: dsi-devtest
+
+        pool:
+          name: "<<YOUR AGENT POOL>>"
+
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - script: |
+                    set -euo pipefail
+                    echo "Loading config: $(PARAMETERS_FILE)"
+
+                    for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+                      value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+                      echo "##vso[task.setvariable variable=$param]$value"
+                    done
+                  displayName: "Load Environment Variables"
+
+                - task: Docker@2
+                  displayName: "Login to GHCR (for pull secret)"
+                  inputs:
+                    command: login
+                    containerRegistry: $(GHCR_SERVICE_CONNECTION)
+
+                - task: AzureCLI@2
+                  displayName: "AKS Auth + Helm Deploy"
+                  inputs:
+                    azureSubscription: ${{ parameters.ServiceConnection }}
+                    scriptType: bash
+                    addSpnToEnvironment: true
+                    scriptLocation: inlineScript
+                    inlineScript: |
+
+                      set -euo pipefail
+                      echo "===== AZURE AUTH ====="
+                      az account set --subscription $(AZURE_SUBSCRIPTION_ID)
+                      az aks install-cli
+                      az aks get-credentials \
+                        --resource-group $(RESOURCE_GROUP) \
+                        --name $(AKS_CLUSTER) \
+                        --overwrite-existing
+
+                      kubelogin convert-kubeconfig -l azurecli
+
+                      echo "===== ENSURE NAMESPACE ====="
+                      kubectl get ns $(NAMESPACE) || kubectl create ns $(NAMESPACE)
+
+                      echo "===== GHCR IMAGE PULL SECRET ====="
+                      # Reuses the docker config from the "Login to GHCR" step above
+                      # (same job) instead of separate GHCR_USER/GHCR_TOKEN variables.
+                      DOCKER_CONFIG_PATH="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+                      if [ ! -f "$DOCKER_CONFIG_PATH" ]; then
+                        echo "Docker config not found at $DOCKER_CONFIG_PATH — GHCR login step may not have run in this job."
+                        exit 1
+                      fi
+
+                      kubectl create secret generic $(GHCR_PULL_SECRET_NAME) \
+                        --from-file=.dockerconfigjson="$DOCKER_CONFIG_PATH" \
+                        --type=kubernetes.io/dockerconfigjson \
+                        -n $(NAMESPACE) \
+                        --dry-run=client -o yaml | kubectl apply -f -
+
+                      echo "===== STORAGE CHECK ====="
+                      kubectl get storageclass
+
+                      echo "===== CSI DRIVER CHECK ====="
+                      kubectl get pods -n kube-system | grep secrets-store || true
+
+                      echo "===== HELM LINT ====="
+                      helm lint $(HELM_DIR) \
+                        -f $(VALUES_FILE)
+
+                      echo "===== DEPLOY TARGET ====="
+                      echo "PARAMETERS_FILE=$(PARAMETERS_FILE)"
+                      echo "RESOURCE_GROUP=$(RESOURCE_GROUP)"
+                      echo "AKS_CLUSTER=$(AKS_CLUSTER)"
+                      echo "NAMESPACE=$(NAMESPACE)"
+                      echo "VALUES_FILE=$(VALUES_FILE)"
+
+                      echo "===== HELM DEPLOY ====="
+                      helm uninstall dpn-airflow -n ns-dpn-01 || true
+                      kubectl delete pod -n ns-dpn-01 -l app.kubernetes.io/instance=dpn-airflow
+                      kubectl delete svc dpn-airflow-webserver -n ns-dpn-01 --ignore-not-found=true
+                      kubectl delete svc dpn-airflow-webserver-external -n ns-dpn-01 --ignore-not-found=true
+                      helm upgrade --install $(RELEASE_NAME) $(HELM_DIR) \
+                        -n $(NAMESPACE) \
+                        -f "$(VALUES_FILE)" \
+                        --set airflow.image.repository=$(GHCR_REGISTRY)/$(GHCR_NAMESPACE)/$(GHCR_AIRFLOW_IMAGE_NAME) \
+                        --set airflow.image.tag=$(RELEASE_TAG) \
+                        --set airflow.imagePullSecrets[0].name=$(GHCR_PULL_SECRET_NAME) \
+                        --wait \
+                        --timeout 15m \
+                        --debug \
+                        2>&1 | tee helm.log
+
+                      echo "===== PVC STATUS ====="
+                      kubectl get pvc -n $(NAMESPACE)
+
+                      echo "===== POD STATUS ====="
+                      kubectl get pods -n $(NAMESPACE) -o wide
+
+                      echo "===== SERVICES ====="
+                      kubectl get svc -n $(NAMESPACE)
+
+                      echo "===== DEPLOYMENT COMPLETE ====="
+
+                  continueOnError: true
+
+                - task: AzureCLI@2
+                  displayName: "Diagnostics On Failure"
+                  condition: failed()
+                  inputs:
+                    azureSubscription: ${{ parameters.ServiceConnection }}
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+
+                      az aks get-credentials \
+                        --resource-group $(RESOURCE_GROUP) \
+                        --name $(AKS_CLUSTER) \
+                        --overwrite-existing
+
+                      echo "===== HELM STATUS ====="
+                      helm status $(RELEASE_NAME) -n $(NAMESPACE) || true
+
+                      echo "===== EVENTS ====="
+                      kubectl get events \
+                        -n $(NAMESPACE) \
+                        --sort-by=.lastTimestamp | tail -100 || true
+
+                      echo "===== PVC ====="
+                      kubectl describe pvc dpn-airflow-postgres-pvc \
+                        -n $(NAMESPACE) || true
+
+                      echo "===== PODS ====="
+                      kubectl get pods -n $(NAMESPACE)
+
+                      for p in $(kubectl get pods -n $(NAMESPACE) -o name); do
+                        echo "==============================="
+                        echo "$p"
+                        echo "==============================="
+                        kubectl describe $p -n $(NAMESPACE) || true
+                        kubectl logs $p -n $(NAMESPACE) --all-containers=true --tail=200 || true
+                      done

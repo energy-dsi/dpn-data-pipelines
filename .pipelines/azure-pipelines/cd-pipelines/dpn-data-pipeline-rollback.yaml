@@ -1,0 +1,321 @@
+trigger: none
+
+pool:
+  name: <<YOUR AGENT POOL>>
+
+# NOTE: single-DPN rollback pipeline for pdev/ptest/puat; `cluster` only
+# offers dpn01, so PARAMETERS_FILE always targets the -dpn01 config file,
+# consistent with dev/devtest/test's naming. dev/devtest/test are listed
+# for dropdown parity and resolve correctly here too (against dpn01) —
+# there is no separate dev-family rollback pipeline today.
+parameters:
+- name: ServiceConnection
+  displayName: 'ServiceConnection details'
+  type: string
+  default: 'sc-dpn-dev-001'
+  values:
+    - sc-dpn-dev-001
+    - sc-dpn-dev-002
+    - sc-dpn-test-001
+    - sc-dpn-test-002
+    - sc-dpn-pdev-ppd-001
+    - sc-dpn-ptest-ppd-001
+    - sc-dpn-puat-ppd-001
+
+- name: environment
+  displayName: 'Select Environment'
+  type: string
+  default: pdev
+  values:
+    - dev
+    - devtest
+    - test
+    - pdev
+    - ptest
+    - puat
+
+- name: cluster
+  displayName: 'Choose DPN Cluster'
+  type: string
+  default: dpn01
+  values:
+    - dpn01
+
+- name: release_name
+  type: string
+
+variables:
+  PARAMETERS_FILE: .pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.cluster }}.json
+  selected_revision: ""
+  # Two approver groups: dsi-devtest for dev/devtest/test, dsi-ppd for
+  # pdev/ptest/puat. Resolved at compile time; also used directly to bind
+  # the Rollback job's `environment:` so the approval check is registered
+  # correctly (not via a runtime macro).
+  ${{ if in(parameters.environment, 'pdev', 'ptest', 'puat') }}:
+    APPROVAL_GROUP: dsi-ppd
+  ${{ else }}:
+    APPROVAL_GROUP: dsi-devtest
+
+# -----------------------------------------------------
+# Stage 0 — Precheck
+# -----------------------------------------------------
+stages:
+- stage: Prepare
+  jobs:
+  - job: Checklist
+    steps:
+    - script: |
+        echo "Confirm rollback readiness"
+        echo "Check platform health"
+        for k in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+          echo "##vso[task.setvariable variable=$k]$(jq -r ".\"$k\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")"
+        done
+
+    - task: AzureCLI@2
+      inputs:
+        azureSubscription: "${{ parameters.ServiceConnection }}"
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -e
+
+          echo "================================================="
+          echo "INSTALL TOOLS"
+          echo "================================================="
+
+          if ! command -v kubectl &>/dev/null || ! command -v kubelogin &>/dev/null; then
+            az aks install-cli --client-version 1.32.3 --kubelogin-version 0.2.18
+          else
+            echo "kubectl and kubelogin already installed, skipping"
+          fi
+
+          kubectl version --client >/dev/null
+          kubelogin --version >/dev/null
+          helm version >/dev/null
+          echo "Tools installed"
+
+          export KUBECONFIG=$(Build.SourcesDirectory)/kubeconfig
+          rm -f $KUBECONFIG
+
+          az aks get-credentials \
+            --resource-group $(RESOURCE_GROUP) \
+            --name $(AKS_CLUSTER) \
+            --overwrite-existing
+
+          kubelogin convert-kubeconfig -l azurecli
+
+# -----------------------------------------------------
+# Stage 2 — Discover Revisions
+# -----------------------------------------------------
+- stage: DiscoverRevisions
+  dependsOn: Prepare
+  jobs:
+  - job: ShowRevisions
+    steps:
+    - script: |
+        CONFIG_FILE="$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"
+        for key in $(jq -r 'keys_unsorted | .[]' "$CONFIG_FILE"); do
+          echo "##vso[task.setvariable variable=$key]$(jq -r ".\"$key\"" "$CONFIG_FILE")"
+        done
+
+    - task: AzureCLI@2
+      name: setRevisions
+      displayName: "Fetch Last 5 Helm Revisions"
+      inputs:
+        azureSubscription: "${{ parameters.ServiceConnection }}"
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -e
+
+          export KUBECONFIG=$(Build.SourcesDirectory)/kubeconfig
+          rm -f $KUBECONFIG
+          echo "================================================="
+          echo "INSTALL TOOLS"
+          echo "================================================="
+
+          if ! command -v kubectl &>/dev/null || ! command -v kubelogin &>/dev/null; then
+            az aks install-cli --client-version 1.32.3 --kubelogin-version 0.2.18
+          else
+            echo "kubectl and kubelogin already installed, skipping"
+          fi
+
+          kubectl version --client >/dev/null
+          kubelogin --version >/dev/null
+          helm version >/dev/null
+          echo "Tools installed"
+
+          az aks get-credentials \
+            --resource-group $(RESOURCE_GROUP) \
+            --name $(AKS_CLUSTER) \
+            --overwrite-existing
+
+          kubelogin convert-kubeconfig -l azurecli
+
+          REV_LIST=$(helm history ${{ parameters.release_name }} -n $(NAMESPACE) -o json | jq -r '
+            .[-5:][] |
+            "Revision: \(.revision) | Status: \(.status) | Updated: \(.updated)"
+          ')
+
+          echo "Last 5 revisions:"
+          echo "$REV_LIST"
+
+          REV_LIST_ESCAPED=$(echo "$REV_LIST" | sed ':a;N;$!ba;s/\n/%0A/g')
+
+          echo "##vso[task.setvariable variable=revision_list;isOutput=true]$REV_LIST_ESCAPED"
+
+# -----------------------------------------------------
+# Stage 3 — Approval
+# -----------------------------------------------------
+- stage: Approval
+  dependsOn: DiscoverRevisions
+
+  variables:
+    revision_list: $[ stageDependencies.DiscoverRevisions.ShowRevisions.outputs['setRevisions.revision_list'] ]
+
+  jobs:
+  - job: WaitForSelection
+    pool: server
+    steps:
+    - task: ManualValidation@0
+      inputs:
+        instructions: |
+          Last 5 Helm revisions:
+
+          $(revision_list)
+
+          Set:
+
+            selected_revision = <revision_number>
+
+          If not provided:
+          previous stable revision will be used automatically.
+
+          Only deployed or superseded revisions are allowed.
+
+# -----------------------------------------------------
+# Stage 4 — Rollback
+# -----------------------------------------------------
+- stage: Rollback
+  dependsOn: Approval
+  jobs:
+  - deployment: RollbackJob
+    ${{ if in(parameters.environment, 'pdev', 'ptest', 'puat') }}:
+      environment: dsi-ppd
+    ${{ else }}:
+      environment: dsi-devtest
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - script: |
+              CONFIG_FILE="$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"
+              for key in $(jq -r 'keys_unsorted | .[]' "$CONFIG_FILE"); do
+                echo "##vso[task.setvariable variable=$key]$(jq -r ".\"$key\"" "$CONFIG_FILE")"
+              done
+
+          - task: AzureCLI@2
+            displayName: "Execute Safe Rollback"
+            inputs:
+              azureSubscription: "${{ parameters.ServiceConnection }}"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+
+                echo "================================================="
+                echo "INSTALL TOOLS"
+                echo "================================================="
+
+                if ! command -v kubectl &>/dev/null || ! command -v kubelogin &>/dev/null; then
+                  az aks install-cli --client-version 1.32.3 --kubelogin-version 0.2.18
+                else
+                  echo "kubectl and kubelogin already installed, skipping"
+                fi
+
+                kubectl version --client >/dev/null
+                kubelogin --version >/dev/null
+                helm version >/dev/null
+                echo "Tools installed"
+                rm -f $KUBECONFIG
+                export KUBECONFIG=$(Build.SourcesDirectory)/kubeconfig
+                az aks get-credentials \
+                  --resource-group $(RESOURCE_GROUP) \
+                  --name $(AKS_CLUSTER) \
+                  --overwrite-existing
+
+                kubelogin convert-kubeconfig -l azurecli
+
+                if [ -z "$(selected_revision)" ]; then
+                  echo "No revision selected, picking previous stable"
+
+                  REV=$(helm history ${{ parameters.release_name }} -n $(NAMESPACE) -o json | jq -r '
+                    map(select(.status=="deployed" or .status=="superseded")) | .[-2].revision
+                  ')
+                else
+                  REV=$(selected_revision)
+                fi
+
+                echo "Selected revision: $REV"
+
+                STATUS=$(helm history ${{ parameters.release_name }} -n $(NAMESPACE) -o json | jq -r "
+                  .[] | select(.revision == ($REV|tonumber)) | .status
+                ")
+
+                echo "Status: $STATUS"
+
+                if [[ "$STATUS" != "deployed" && "$STATUS" != "superseded" ]]; then
+                  echo "Rollback blocked: invalid revision"
+                  exit 1
+                fi
+
+                echo "Dry run"
+                helm rollback ${{ parameters.release_name }} $REV -n $(NAMESPACE) --dry-run
+
+                echo "Executing rollback"
+                helm rollback ${{ parameters.release_name }} $REV \
+                  -n $(NAMESPACE) \
+                  --wait \
+                  --timeout 10m
+
+               
+# -----------------------------------------------------
+# Stage 5 — Verify
+# -----------------------------------------------------
+- stage: Verify
+  dependsOn: Rollback
+  jobs:
+  - job: Verify
+    steps:
+    - script: |
+        CONFIG_FILE="$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"
+        for key in $(jq -r 'keys_unsorted | .[]' "$CONFIG_FILE"); do
+          echo "##vso[task.setvariable variable=$key]$(jq -r ".\"$key\"" "$CONFIG_FILE")"
+        done
+
+    - task: AzureCLI@2
+      inputs:
+        azureSubscription: "${{ parameters.ServiceConnection }}"
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -e
+
+          export KUBECONFIG=$(Build.SourcesDirectory)/kubeconfig
+          rm -f $KUBECONFIG
+
+          az aks get-credentials \
+            --resource-group $(RESOURCE_GROUP) \
+            --name $(AKS_CLUSTER)
+
+          kubelogin convert-kubeconfig -l azurecli
+
+          echo "Helm status"
+          helm status ${{ parameters.release_name }} -n $(NAMESPACE)
+
+          echo "Recent revisions"
+          helm history ${{ parameters.release_name }} -n $(NAMESPACE) | tail -n 3
+
+          echo "Pods"
+          kubectl get pods -n $(NAMESPACE)
+          echo "Verifying rollback content"

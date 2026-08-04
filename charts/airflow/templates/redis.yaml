@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.redis.name }}
+  labels:
+    app: {{ .Values.redis.name }}
+
+spec:
+  replicas: {{ .Values.redis.replicaCount }}
+
+  selector:
+    matchLabels:
+      app: {{ .Values.redis.name }}
+
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.redis.name }}
+
+    spec:
+      restartPolicy: Always
+
+      securityContext:
+        fsGroup: 999
+
+      containers:
+        - name: {{ .Values.redis.name }}
+
+          image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
+          imagePullPolicy: {{ .Values.redis.image.pullPolicy }}
+
+          ports:
+            - containerPort: {{ .Values.redis.service.port }}
+
+          args:
+            - "redis-server"
+            - "--save"
+            - '""'     
+            - "--appendonly"
+            - "no"
+            - "--loglevel"
+            - "warning"
+            - "--tcp-keepalive"
+            - "60"
+            - "--timeout"
+            - "300"
+
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "250m"
+
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+
+          readinessProbe:
+            exec:
+              command:
+                - "redis-cli"
+                - "ping"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+          livenessProbe:
+            exec:
+              command:
+                - "redis-cli"
+                - "ping"
+            initialDelaySeconds: 30
+            periodSeconds: 20
+
+      volumes:
+        - name: redis-data
+          emptyDir: {}
+
+      automountServiceAccountToken: false
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.redis.name }}
+  labels:
+    app: {{ .Values.redis.name }}
+
+spec:
+  type: {{ .Values.redis.service.type }}
+
+  selector:
+    app: {{ .Values.redis.name }}
+
+  ports:
+    - name: redis
+      port: {{ .Values.redis.service.port }}
+      targetPort: {{ .Values.redis.service.port }}

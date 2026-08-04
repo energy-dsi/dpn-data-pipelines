@@ -1,0 +1,108 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dpn-airflow-init
+  labels:
+    app: dpn-airflow-init
+
+spec:
+  backoffLimit: 4
+
+  template:
+    metadata:
+      labels:
+        app: dpn-airflow-init
+
+    spec:
+      restartPolicy: OnFailure
+
+      containers:
+        - name: dpn-airflow-init
+
+          image: "{{ .Values.airflow.image.repository }}:{{ .Values.airflow.image.tag }}"
+          imagePullPolicy: {{ .Values.airflow.image.pullPolicy }}
+
+          command: ["/bin/bash", "-c"]
+
+          args:
+            - |
+              echo "Waiting for Postgres to be ready..."
+
+              until pg_isready -h dpn-airflow-postgres -p 5432; do
+                echo "Waiting for postgres..."
+                sleep 5
+              done
+
+              echo "Postgres is ready"
+
+              echo "Running DB migration..."
+              airflow db migrate
+
+              echo "Creating admin user (if not exists)..."
+
+              airflow users create \
+                --username "${AIRFLOW_ADMIN_USER:-admin}" \
+                --password "${AIRFLOW_ADMIN_PASSWORD:?AIRFLOW_ADMIN_PASSWORD not set}" \
+                --firstname Admin \
+                --lastname User \
+                --role Admin \
+                --email admin@example.com || true
+
+              echo "Airflow initialization complete"
+
+          envFrom:
+            - configMapRef:
+                name: dpn-airflow-config
+            - secretRef:
+                name: dpn-airflow-secrets
+
+          env:
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: "postgresql+psycopg2://{{ .Values.postgres.username }}:$(POSTGRES_PASSWORD)@dpn-airflow-postgres:5432/{{ .Values.postgres.db }}"
+
+            - name: AIRFLOW__CELERY__RESULT_BACKEND
+              value: "db+postgresql://{{ .Values.postgres.username }}:$(POSTGRES_PASSWORD)@dpn-airflow-postgres:5432/{{ .Values.postgres.db }}"
+
+            - name: AIRFLOW__CORE__FERNET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dpn-airflow-secrets
+                  key: FERNET_KEY
+
+            - name: AIRFLOW__WEBSERVER__SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dpn-airflow-secrets
+                  key: WEB_SECRET_KEY
+
+            - name: AIRFLOW__CELERY__BROKER_CONNECTION_RETRY_ON_STARTUP
+              value: "true"
+
+          volumeMounts:
+            - name: airflow-secrets-store
+              mountPath: /mnt/secrets
+              readOnly: true
+
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "200m"
+
+          securityContext:
+            runAsUser: 50000
+            runAsGroup: 50000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+
+      volumes:
+        - name: airflow-secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: dpn-airflow-kv-secrets
+
+      automountServiceAccountToken: false

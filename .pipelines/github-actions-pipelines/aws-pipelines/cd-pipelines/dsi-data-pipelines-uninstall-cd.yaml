@@ -1,0 +1,217 @@
+name: DPN Uninstall (AWS EKS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Select Environment
+        required: true
+        default: dev
+        type: choice
+        options: [dev, devtest, sit, preprod, prod]
+
+      cluster:
+        description: Choose DPN Cluster
+        required: true
+        default: dpn01
+        type: choice
+        options: [dpn01, dpn02]
+
+      configType:
+        description: Select Config Type
+        required: true
+        type: choice
+        options: [producer, consumer]
+
+env:
+  PARAMETERS_FILE: .pipelines/github-actions-pipelines/aws-pipelines/config/${{ github.event.inputs.environment }}-${{ github.event.inputs.cluster }}.json
+
+jobs:
+
+# --------------------------------------------------
+# Stage 0 — Precheck
+# --------------------------------------------------
+  precheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checklist Acknowledgement
+        run: |
+          echo "CONFIRM BEFORE PROCEEDING:"
+          echo "1. Pipelines stopped"
+          echo "2. No active file ingestion"
+          echo "3. Kafka topics drained"
+          echo "4. Backups taken if required"
+
+# --------------------------------------------------
+# Stage 1 — Prepare (Load Config + EKS Auth)
+# --------------------------------------------------
+  prepare:
+    needs: precheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load Environment Variables
+        run: |
+          if [ ! -f "$PARAMETERS_FILE" ]; then
+            echo "ERROR: Config file not found $PARAMETERS_FILE"
+            exit 1
+          fi
+
+          echo "Loading environment variables..."
+          for key in $(jq -r 'keys_unsorted | .[]' "$PARAMETERS_FILE"); do
+            value=$(jq -r ".\"$key\"" "$PARAMETERS_FILE")
+            echo "$key=$value" >> $GITHUB_ENV
+          done
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE }}
+
+      - name: Authenticate to EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region $AWS_REGION \
+            --name $EKS_CLUSTER
+
+# --------------------------------------------------
+# Stage 2 — Approval (Manual Gate)
+# --------------------------------------------------
+  approval:
+    needs: prepare
+    runs-on: ubuntu-latest
+
+    environment:
+      name: certificate-manager-${{ github.event.inputs.environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE }}
+
+      - name: Authenticate to EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region $AWS_REGION \
+            --name $EKS_CLUSTER
+
+      - name: Approval Context + Preview
+        run: |
+          echo "===================================================="
+          echo "DPN PLATFORM UNINSTALL — APPROVAL REQUIRED"
+          echo "===================================================="
+          echo ""
+          echo "Helm releases that WILL be deleted:"
+          echo "Filter: consumer / producer"
+          echo ""
+
+          echo "----------------------------------------------------"
+          helm list -n $NAMESPACE -q \
+            | grep '^dpn-certificate-manager' || echo "None found" \
+            | while read -r release; do
+                echo "Will uninstall: $release"
+              done
+          echo "----------------------------------------------------"
+          echo "NO resources deleted yet."
+
+# --------------------------------------------------
+# Stage 3 — Uninstall
+# --------------------------------------------------
+  uninstall:
+    needs: approval
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reload Environment Variables
+        run: |
+          for key in $(jq -r 'keys_unsorted | .[]' "$PARAMETERS_FILE"); do
+            value=$(jq -r ".\"$key\"" "$PARAMETERS_FILE")
+            echo "$key=$value" >> $GITHUB_ENV
+          done
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE }}
+
+      - name: Authenticate to EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region $AWS_REGION \
+            --name $EKS_CLUSTER
+
+      - name: Helm Uninstall
+        run: |
+          if [[ "${{ github.event.inputs.configType }}" == "consumer" ]]; then
+            RELEASES=$(helm list -n $NAMESPACE -q | grep consumer || true)
+          else
+            RELEASES=$(helm list -n $NAMESPACE -q | grep producer || true)
+          fi
+
+          echo "Releases found:"
+          echo "$RELEASES"
+
+          for rel in $RELEASES; do
+            echo "Uninstalling $rel"
+            helm uninstall "$rel" -n $NAMESPACE
+          done
+
+# --------------------------------------------------
+# Stage 4 — Verify
+# --------------------------------------------------
+  verify:
+    needs: uninstall
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load Environment Variables
+        run: |
+          if [ ! -f "$PARAMETERS_FILE" ]; then
+            echo "ERROR: Config file not found: $PARAMETERS_FILE"
+            exit 1
+          fi
+
+          for key in $(jq -r 'keys_unsorted | .[]' "$PARAMETERS_FILE"); do
+            value=$(jq -r ".\"$key\"" "$PARAMETERS_FILE")
+            echo "$key=$value" >> $GITHUB_ENV
+          done
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE }}
+
+      - name: Authenticate to EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region $AWS_REGION \
+            --name $EKS_CLUSTER
+
+      - name: Final Verification
+        run: |
+          echo "Using namespace: $NAMESPACE"
+
+          echo "Deployments:"
+          kubectl get deployments -n $NAMESPACE
+
+          echo "Pods:"
+          kubectl get pods -n $NAMESPACE
+
+          echo "Helm Releases:"
+          helm list -n $NAMESPACE
+
+          echo "Services:"
+          kubectl get svc -n $NAMESPACE

@@ -1,0 +1,287 @@
+name: DPN Helm Uninstall
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Select Environment
+        type: choice
+        default: dev
+        options:
+          - dev
+          - devtest
+          - sit
+          - preprod
+          - prod
+
+      cluster:
+        description: Choose DPN Cluster
+        type: choice
+        default: dpn01
+        options:
+          - dpn01
+          - dpn02
+
+      ServiceConnection:
+        description: ServiceConnection details
+        type: choice
+        default: gcp-dpn-dev-001
+        options:
+          - gcp-dpn-dev-001
+          - gcp-dpn-dev-002
+          - gcp-dpn-sit-001
+          - gcp-dpn-preprod-001
+          - gcp-dpn-prod-001
+
+      configType:
+        description: Select Config Type
+        type: choice
+        options:
+          - producer
+          - consumer
+
+env:
+  PARAMETERS_FILE: .pipelines/github-actions-pipelines/gcp-pipelines/config/${{ inputs.environment }}-${{ inputs.cluster }}.json
+  CONFIG_TYPE: ${{ inputs.configType }}
+  HELM_REPO_URL: https://raw.githubusercontent.com/helm/helm
+  HELM_BRANCH: main
+  HELM_SCRIPT: scripts/get-helm-3
+
+jobs:
+
+# --------------------------------------------------
+# Stage 0 — Pre-Uninstall Checklist
+# --------------------------------------------------
+  Precheck:
+    name: Pre-Uninstall Checklist
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checklist Acknowledgement
+        run: |
+          echo "CONFIRM BEFORE PROCEEDING:"
+          echo "1. Pipelines stopped"
+          echo "2. No active file ingestion"
+          echo "3. Kafka topics drained"
+          echo "4. Backups taken if required"
+
+# --------------------------------------------------
+# Stage 1 — Load Config & GKE Auth
+# --------------------------------------------------
+  Prepare:
+    name: Load Config & GKE Auth
+    needs: Precheck
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Read Environment Variables
+        run: |
+          set -e
+
+          CONFIG_FILE="$GITHUB_WORKSPACE/$PARAMETERS_FILE"
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "ERROR: Config file not found $CONFIG_FILE"
+            exit 1
+          fi
+
+          echo "Loading environment variables"
+          for key in $(jq -r 'keys_unsorted | .[]' "$CONFIG_FILE"); do
+            value=$(jq -r ".\"$key\"" "$CONFIG_FILE")
+            echo "$key=$value" >> $GITHUB_ENV
+          done
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Install Tools
+        run: |
+          set -euo pipefail
+
+          echo "================================================="
+          echo "INSTALL TOOLS"
+          echo "================================================="
+
+          gcloud components install kubectl -q
+
+          curl -sSL "$HELM_REPO_URL/$HELM_BRANCH/$HELM_SCRIPT" | bash
+
+          kubectl version --client > /dev/null
+          helm version > /dev/null
+
+          echo "Tools installed"
+
+      - name: Configure GKE Context
+        run: |
+          set -euo pipefail
+
+          gcloud container clusters get-credentials \
+            $GKE_CLUSTER \
+            --region $GCP_REGION \
+            --project $GCP_PROJECT_ID
+
+          echo "GKE context ready"
+
+# -----------------------------
+# Stage 2 — Approval
+# -----------------------------
+  Approval:
+    name: Approval - Confirm Deletion Scope
+    needs: Prepare
+    runs-on: ubuntu-latest
+    environment:
+      name: certificate-manager-${{ inputs.environment }}
+
+    steps:
+
+      - name: Approval Context Header
+        run: |
+          echo "===================================================="
+          echo "DPN PLATFORM UNINSTALL — APPROVAL REQUIRED"
+          echo "===================================================="
+          echo ""
+          echo "The following Helm releases WILL be deleted"
+          echo "ONCE APPROVAL IS GRANTED:"
+          echo ""
+          echo "Filtering rule:"
+          echo "  Helm releases starting with: consumer/ producer"
+          echo ""
+
+      - name: Preview Helm Releases (READ-ONLY)
+        run: |
+          set -euo pipefail
+
+          gcloud container clusters get-credentials \
+            $GKE_CLUSTER \
+            --region $GCP_REGION \
+            --project $GCP_PROJECT_ID
+
+          echo ""
+          echo "Helm releases that will be deleted:"
+          echo "----------------------------------------------------"
+
+          helm list -n $NAMESPACE -q \
+          | grep '^dpn-certificate-manager' || echo "None found" \
+          | while read -r release; do
+            echo "Uninstalling Helm release: $release"
+          done
+
+          echo ""
+          echo "----------------------------------------------------"
+          echo "NO resources have been deleted in this stage."
+          echo "Deletion will occur ONLY after approval."
+          echo "===================================================="
+
+# -----------------------------
+# Stage 3 — Helm Uninstall
+# -----------------------------
+  Uninstall:
+    name: Helm Uninstall
+    needs: Approval
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Reload Environment Variables
+        run: |
+          CONFIG_FILE="$GITHUB_WORKSPACE/$PARAMETERS_FILE"
+          for key in $(jq -r 'keys_unsorted | .[]' "$CONFIG_FILE"); do
+            echo "$key=$(jq -r ".\"$key\"" "$CONFIG_FILE")" >> $GITHUB_ENV
+          done
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: GKE Authentication
+        run: |
+          gcloud container clusters get-credentials \
+            $GKE_CLUSTER \
+            --region $GCP_REGION \
+            --project $GCP_PROJECT_ID
+
+      - name: Helm Uninstall
+        run: |
+          if [[ "$CONFIG_TYPE" == "consumer" ]]; then
+            Release=$(helm list -n $NAMESPACE -q | grep consumer || true)
+          else
+            Release=$(helm list -n $NAMESPACE -q | grep producer || true)
+          fi
+
+          echo "$Release"
+
+# -----------------------------
+# Stage 4 — Verify
+# -----------------------------
+  Verify:
+    name: Final Verification
+    needs: Uninstall
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Load Environment Variables
+        run: |
+          set -e
+
+          CONFIG_FILE="$GITHUB_WORKSPACE/$PARAMETERS_FILE"
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "ERROR: Config file not found: $CONFIG_FILE"
+            exit 1
+          fi
+
+          for key in $(jq -r 'keys_unsorted | .[]' "$CONFIG_FILE"); do
+            value=$(jq -r ".\"$key\"" "$CONFIG_FILE")
+            echo "$key=$value" >> $GITHUB_ENV
+            echo "Loaded $key=$value"
+          done
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: GKE Authentication
+        run: |
+          set -euo pipefail
+
+          gcloud container clusters get-credentials \
+            $GKE_CLUSTER \
+            --region $GCP_REGION \
+            --project $GCP_PROJECT_ID
+
+      - name: Verification
+        run: |
+          echo "Using namespace: $NAMESPACE"
+
+          echo "Deployments:"
+          kubectl get deployments -n $NAMESPACE
+
+          echo "Pods:"
+          kubectl get pods -n $NAMESPACE
+
+          echo "Helm Releases:"
+          helm list -n $NAMESPACE
+
+          echo "Services preserved:"
+          kubectl get svc -n $NAMESPACE

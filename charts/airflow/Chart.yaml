@@ -1,0 +1,7 @@
+apiVersion: v2
+name: dpn-airflow
+description: DPN Apache Airflow deployment (Webserver, Scheduler, Worker, Triggerer, Redis, Postgres)
+type: application
+version: 0.1.0
+appVersion: "2.9.1"
+
