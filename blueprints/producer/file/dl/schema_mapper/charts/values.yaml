@@ -7,6 +7,25 @@ imageTag: ""
 productType: ""
 secretName: eqbd-adaptor-secrets
 bootstrapServer: dpn-kafka-src:9092
+# ============================================================
+# Kafka Security (SASL/TLS — SASL_SSL + SASL_OAUTHBEARER/Keycloak)
+# build_kafka_client_config() reads these KAFKA_*/KAFKA_OAUTH_* vars.
+# See README.md "Kafka Authentication" section for full details.
+# ============================================================
+KAFKA_SECURITY_PROTOCOL: SASL_SSL    # SASL authentication over TLS (set to SSL or PLAINTEXT to opt out)
+KAFKA_SASL_MECHANISM: OAUTHBEARER    # OAuth2 client-credentials via Keycloak
+KAFKA_OAUTH_CLIENT_ID: dpn-kafka-client        # Keycloak service-account client
+KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-health-01.svc.cluster.local:8443/realms/dpn-observability/protocol/openid-connect/token
+KAFKA_SSL_CA_LOCATION: /certs/ca.crt # CA cert that signed the broker certificate; mounted from kafkaCaConfigMapName below
+
+# KAFKA_OAUTH_CLIENT_SECRET is never stored here. It is injected via a
+# Kubernetes Secret (templates/secret.yaml), referenced through secretKeyRef.
+# Provide it via --set kafkaOauthClientSecret=<secret>, or pre-create a
+# Secret named <kafkaOauthSecretName> (default "<name>-kafka-oauth") with a
+# "client-secret" key and leave kafkaOauthClientSecret unset.
+kafkaOauthClientSecret: ""
+kafkaOauthSecretName: ""   # defaults to "<name>-kafka-oauth" when empty
+kafkaCaConfigMapName: ""   # defaults to "<name>-kafka-ca" when empty
 srcContainerName: dl-stage
 storageConnectionSecret: producer-file-dp-secret
 mapperTopicName: dpn-producer-dl-raw
