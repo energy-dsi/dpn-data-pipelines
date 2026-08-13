@@ -16,13 +16,6 @@ KAFKA_OAUTH_CLIENT_ID: dpn-service-client        # Keycloak service-account clie
 KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-observability/protocol/openid-connect/token
 KAFKA_SSL_CA_LOCATION: /certs/ca.crt # CA cert that signed the broker certificate; mounted from kafkaCaConfigMapName below
 
-# KAFKA_OAUTH_CLIENT_SECRET is never stored here. It is injected via a
-# Kubernetes Secret (templates/secret.yaml), referenced through secretKeyRef.
-# Provide it via --set kafkaOauthClientSecret=<secret>, or pre-create a
-# Secret named <kafkaOauthSecretName> (default "<name>-kafka-oauth") with a
-# "client-secret" key and leave kafkaOauthClientSecret unset.
-kafkaOauthClientSecret: ""
-kafkaOauthSecretName: ""   # defaults to "<name>-kafka-oauth" when empty
 kafkaCaConfigMapName: ""   # defaults to "<name>-kafka-ca" when empty
 srcContainerName: dp-consumer-stage
 storageConnectionSecret: consumer-file-dp-secret
