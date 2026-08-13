@@ -15,9 +15,7 @@ KAFKA_SECURITY_PROTOCOL: SASL_SSL    # SASL authentication over TLS (set to SSL 
 KAFKA_SASL_MECHANISM: OAUTHBEARER    # OAuth2 client-credentials via Keycloak
 KAFKA_OAUTH_CLIENT_ID: dpn-service-client        # Keycloak service-account client
 KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-observability/protocol/openid-connect/token
-# Supplied from AKV in the dev environment. Uncomment (here and in
-# templates/deployment.yaml) to pin the CA path in the chart instead.
-# KAFKA_SSL_CA_LOCATION: /certs/ca.crt # CA cert that signed the broker certificate; mounted from kafkaCaConfigMapName below
+KAFKA_SSL_CA_LOCATION: /certs/ca.crt # CA cert that signed the broker certificate; mounted from kafkaCaConfigMapName below
 
 # KAFKA_OAUTH_CLIENT_SECRET is never stored here. It is injected via a
 # Kubernetes Secret (templates/secret.yaml), referenced through secretKeyRef.

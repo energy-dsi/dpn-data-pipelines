@@ -70,10 +70,8 @@ spec:
                 key: client-secret
           - name: "KAFKA_OAUTH_TOKEN_ENDPOINT_URL"
             value: {{ .Values.KAFKA_OAUTH_TOKEN_ENDPOINT_URL }}
-          # Supplied from AKV in the dev environment. Uncomment together with
-          # KAFKA_SSL_CA_LOCATION in values.yaml to pin the CA path in the chart.
-          # - name: "KAFKA_SSL_CA_LOCATION"
-          #   value: {{ .Values.KAFKA_SSL_CA_LOCATION }}
+          - name: "KAFKA_SSL_CA_LOCATION"
+            value: {{ .Values.KAFKA_SSL_CA_LOCATION }}
           - name: "mapperConnectionString"
             valueFrom:
               secretKeyRef:
