@@ -64,8 +64,8 @@ spec:
           - name: "KAFKA_OAUTH_CLIENT_SECRET"
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.kafkaOauthSecretName | default (printf "%s-kafka-oauth" .Values.name) }}
-                key: client-secret
+                name: {{ .Values.kafkaOauthSecretName | default "kafka-secrets" }}
+                key: KAFKA_OAUTH_CLIENT_SECRET
           - name: "KAFKA_OAUTH_TOKEN_ENDPOINT_URL"
             value: {{ .Values.KAFKA_OAUTH_TOKEN_ENDPOINT_URL }}
           - name: "KAFKA_SSL_CA_LOCATION"
@@ -146,13 +146,13 @@ spec:
           
 
           volumeMounts:
-            - name: kafka-ca-cert
+            - name: dpn-tls
               mountPath: /etc/kafka/secrets
               readOnly: true
 
       volumes:
-        - name: kafka-ca-cert
-          configMap:
-            name: {{ .Values.kafkaCaConfigMapName | default (printf "%s-kafka-ca" .Values.name) }}
+        - name: dpn-tls
+          secret:
+            secretName: {{ .Values.kafkaTlsSecretName | default "dpn-tls" }}
 
       automountServiceAccountToken: false
