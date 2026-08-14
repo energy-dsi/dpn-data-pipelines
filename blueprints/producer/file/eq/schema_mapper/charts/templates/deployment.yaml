@@ -133,7 +133,7 @@ spec:
 
           volumeMounts:
             - name: kafka-ca-cert
-              mountPath: /certs
+              mountPath: /etc/kafka/secrets
               readOnly: true
 
       volumes:
