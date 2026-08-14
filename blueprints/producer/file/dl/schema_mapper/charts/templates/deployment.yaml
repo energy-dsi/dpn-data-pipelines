@@ -63,6 +63,21 @@ spec:
               value: {{ .Values.mapperContainerName | quote }}
             - name: "bootstrapServer"
               value: {{ .Values.bootstrapServer | quote }}
+            - name: "KAFKA_SECURITY_PROTOCOL"
+              value: {{ .Values.KAFKA_SECURITY_PROTOCOL | quote }}
+            - name: "KAFKA_SASL_MECHANISM"
+              value: {{ .Values.KAFKA_SASL_MECHANISM | quote }}
+            - name: "KAFKA_OAUTH_CLIENT_ID"
+              value: {{ .Values.KAFKA_OAUTH_CLIENT_ID | quote }}
+            - name: "KAFKA_OAUTH_CLIENT_SECRET"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.kafkaOauthSecretName | default (printf "%s-kafka-oauth" .Values.name) }}
+                  key: client-secret
+            - name: "KAFKA_OAUTH_TOKEN_ENDPOINT_URL"
+              value: {{ .Values.KAFKA_OAUTH_TOKEN_ENDPOINT_URL | quote }}
+            - name: "KAFKA_SSL_CA_LOCATION"
+              value: {{ .Values.KAFKA_SSL_CA_LOCATION | quote }}
             - name: "productType"
               value: {{ .Values.productType | quote }}
             - name: "orgName"
@@ -115,5 +130,15 @@ spec:
               value: {{ .Values.SERVICE_VERSION | quote }}
             - name: "ENVIRONMENT"
               value: {{ .Values.ENVIRONMENT | quote }}
+
+          volumeMounts:
+            - name: kafka-ca-cert
+              mountPath: /etc/kafka/secrets
+              readOnly: true
+
+      volumes:
+        - name: kafka-ca-cert
+          configMap:
+            name: {{ .Values.kafkaCaConfigMapName | default (printf "%s-kafka-ca" .Values.name) }}
 
       automountServiceAccountToken: false

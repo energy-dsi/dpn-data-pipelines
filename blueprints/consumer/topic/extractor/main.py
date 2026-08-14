@@ -36,6 +36,7 @@ from dpn_observability_sdk.otel_tracer import OtelTracer
 from dpn_observability_sdk.otel_metrics import OtelMetrics
 from dpn_observability_sdk.otel_instrumentation import traced, timed_metric
 from dpn_observability_sdk.heartbeat import HeartbeatLogger
+from utils.kafka_security import build_kafka_client_config
 from utils.topic_utils import TopicResolver, KafkaTopicManager
 from utils.pipeline_context import PipelineContext
 from utils.scheduler_backend import get_backend
@@ -125,7 +126,7 @@ class TopicForwarder:
         topic_manager.ensure_exists(self.mapper_topic)
 
         # Kafka producer initialization
-        self.producer = Producer({"bootstrap.servers": self.bootstrap})
+        self.producer = Producer(build_kafka_client_config(self.bootstrap))
 
         self.logger.info(
             "extractor initialised",
@@ -289,7 +290,7 @@ class TopicForwarder:
 
                 # Create Kafka consumer
                 consumer = Consumer({
-                    "bootstrap.servers": self.bootstrap,
+                    **build_kafka_client_config(self.bootstrap),
                     "group.id": self.group_id,
                     "auto.offset.reset": "earliest",
                     "enable.auto.commit": True,

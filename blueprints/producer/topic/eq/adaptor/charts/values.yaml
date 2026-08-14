@@ -13,6 +13,17 @@ imageTag: ""               # Image tag (empty = latest/default)
 # Kafka Configuration (Source Cluster)
 # ============================================================
 bootstrapServer: dpn-kafka-src:9092   # Kafka broker endpoint
+# ============================================================
+# Kafka Security (SASL/TLS — SASL_SSL + SASL_OAUTHBEARER/Keycloak)
+# build_kafka_client_config() reads these KAFKA_*/KAFKA_OAUTH_* vars.
+# See README.md "Kafka Authentication" section for full details.
+# ============================================================
+KAFKA_SECURITY_PROTOCOL: SASL_SSL    # SASL authentication over TLS (set to SSL or PLAINTEXT to opt out)
+KAFKA_SASL_MECHANISM: OAUTHBEARER    # OAuth2 client-credentials via Keycloak
+KAFKA_OAUTH_CLIENT_ID: dpn-service-client        # Keycloak service-account client
+KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-observability/protocol/openid-connect/token
+KAFKA_SSL_CA_LOCATION: /etc/kafka/secrets/  # CA cert that signed the broker certificate; mounted from kafkaCaConfigMapName below
+
 
 mapperTopicName: dpn-producer-eq-raw   # Topic for raw incoming data
 srcTopicName: dpn-producer-eq-stage    # Source topic consumed by adaptor

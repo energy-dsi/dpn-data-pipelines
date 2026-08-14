@@ -39,6 +39,21 @@ spec:
           env:
           - name: "bootstrapServer"
             value: {{ .Values.bootstrapServer }}
+          - name: "KAFKA_SECURITY_PROTOCOL"
+            value: {{ .Values.KAFKA_SECURITY_PROTOCOL }}
+          - name: "KAFKA_SASL_MECHANISM"
+            value: {{ .Values.KAFKA_SASL_MECHANISM }}
+          - name: "KAFKA_OAUTH_CLIENT_ID"
+            value: {{ .Values.KAFKA_OAUTH_CLIENT_ID }}
+          - name: "KAFKA_OAUTH_CLIENT_SECRET"
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.kafkaOauthSecretName | default (printf "%s-kafka-oauth" .Values.name) }}
+                key: client-secret
+          - name: "KAFKA_OAUTH_TOKEN_ENDPOINT_URL"
+            value: {{ .Values.KAFKA_OAUTH_TOKEN_ENDPOINT_URL }}
+          - name: "KAFKA_SSL_CA_LOCATION"
+            value: {{ .Values.KAFKA_SSL_CA_LOCATION }}
 
           - name: "srcTopicName"
             value: {{ .Values.srcTopicName }}
@@ -112,4 +127,14 @@ spec:
           - name: "ENVIRONMENT"
             value: {{ .Values.ENVIRONMENT }}
             
+          volumeMounts:
+            - name: kafka-ca-cert
+              mountPath: /etc/kafka/secrets
+              readOnly: true
+
+      volumes:
+        - name: kafka-ca-cert
+          configMap:
+            name: {{ .Values.kafkaCaConfigMapName | default (printf "%s-kafka-ca" .Values.name) }}
+
       automountServiceAccountToken: false
