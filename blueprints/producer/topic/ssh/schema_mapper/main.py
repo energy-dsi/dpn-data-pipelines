@@ -78,6 +78,7 @@ from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 from opentelemetry import propagate as _otel_propagate
 from dotenv import load_dotenv
 
+from utils.kafka_security import build_kafka_client_config
 from utils.topic_utils import TopicResolver, KafkaTopicManager
 from utils.pipeline_context import PipelineContext
 from utils.scheduler_backend import get_backend
@@ -225,7 +226,7 @@ class TopicSchemaMapper:
 
         # Kafka producer client
         self.producer = Producer(
-            {"bootstrap.servers": self.bootstrap}
+            build_kafka_client_config(self.bootstrap)
         )
 
 
@@ -382,7 +383,7 @@ class TopicSchemaMapper:
                 # Kafka consumer config
                 consumer = Consumer(
                     {
-                        "bootstrap.servers": self.bootstrap,
+                        **build_kafka_client_config(self.bootstrap),
                         "group.id": self.group_id,
                         "auto.offset.reset": "earliest",  # ensures existing data is read
                         "enable.auto.commit": True,

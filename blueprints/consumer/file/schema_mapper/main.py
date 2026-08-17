@@ -50,6 +50,7 @@ from dpn_observability_sdk.heartbeat import HeartbeatLogger
 from utils.pipeline_context import PipelineContext
 from utils.scheduler_backend import get_backend
 from utils.step_logger import StepLogger
+from utils.kafka_security import build_kafka_client_config
 from utils.topic_utils import TopicResolver, KafkaTopicManager
 
 # Load environment variables
@@ -376,7 +377,7 @@ def _drain(mapper, step_log, ctx, handler):
     Consumes messages until idle timeout is reached.
     """
     consumer = Consumer({
-        "bootstrap.servers": mapper.bootstrap,
+        **build_kafka_client_config(mapper.bootstrap),
         "group.id": "consumer_file_mapper",
         "auto.offset.reset": "earliest",
         "enable.auto.commit": True,
@@ -426,7 +427,7 @@ def _continuous(mapper, step_log, ctx, handler):
     step_log.step_start(ctx, "consumer_loop")
 
     consumer = Consumer({
-        "bootstrap.servers": mapper.bootstrap,
+        **build_kafka_client_config(mapper.bootstrap),
         "group.id": "consumer_file_mapper",
         "auto.offset.reset": "earliest",
         "enable.auto.commit": True,

@@ -97,6 +97,7 @@ from opentelemetry import context as _otel_context, propagate as _otel_propagate
 from utils.config_validator import validate_cloud_config, validate_kafka_config
 from utils.data_transection import DataTransection
 from utils.exception_handler import HandleExceptions
+from utils.kafka_security import build_kafka_client_config
 from utils.kafka_transection import KafkaTransection
 from utils.otel_logger import OtelLogger as Logging
 from utils.pipeline_context import PipelineContext
@@ -482,7 +483,7 @@ def _run_drain_mode(
         )
 
         consumer = Consumer({
-            "bootstrap.servers":  mapper.bootstrap_server,
+            **build_kafka_client_config(mapper.bootstrap_server),
             "group.id":           "producer_schema_mapper",
             "auto.offset.reset":  "earliest",
             "enable.auto.commit": True,
