@@ -1,0 +1,7 @@
+{
+  "IMAGE_REGISTRY": "ghcr.io/energy-dsi",
+  "AWS_REGION": "eu-west-2",
+  "AWS_ACCOUNT_ID": "627657103820",
+  "EKS_CLUSTER": "eks-dpn-dev-eu-west-2",
+  "NAMESPACE": "ns-dpn-01"
+}

@@ -1,0 +1,102 @@
+name: DPN PoC - Step 0 - Runner Connectivity Check
+
+on:
+  workflow_dispatch:
+
+env:
+  PARAMETERS_FILE: '.pipelines/github-actions/config/aws-dpn01.json'
+  HUB_ROLE_ARN: arn:aws:iam::950639282434:role/oidc_github_runner_hub
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  connectivity-check:
+    runs-on: [self-hosted, vmss]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read config from aws-dpn01.json
+        run: |
+          set -e
+          if [ ! -f "$(pwd)/${{ env.PARAMETERS_FILE }}" ]; then
+            echo "Error: ${{ env.PARAMETERS_FILE }} not found!"
+            exit 1
+          fi
+          echo "Reading parameters from ${{ env.PARAMETERS_FILE }}"
+          for key in $(jq -r 'keys_unsorted | .[]' "${{ env.PARAMETERS_FILE }}"); do
+            value=$(jq -r ".\"$key\"" "${{ env.PARAMETERS_FILE }}")
+            echo "$key=$value" >> "$GITHUB_ENV"
+            echo "Set $key=$value"
+          done
+
+      - name: Where am I?
+        run: |
+          hostname
+          whoami
+          docker --version || echo "Docker NOT installed on this runner"
+
+      - name: Ensure AWS CLI is installed
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          if command -v aws >/dev/null 2>&1; then
+            aws --version
+            exit 0
+          fi
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
+          ./aws/install --bin-dir "$HOME/.local/bin" --install-dir "$HOME/.aws-cli" --update
+
+      - name: Resolve AWS CLI executable
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          AWS_BIN="$(command -v aws || echo "$HOME/.local/bin/aws")"
+          echo "AWS_BIN=$AWS_BIN" >> "$GITHUB_ENV"
+
+      - name: Ensure kubectl is installed
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          if command -v kubectl >/dev/null 2>&1; then
+            kubectl version --client=true --output=yaml
+            exit 0
+          fi
+          curl -fsSL -o "$HOME/.local/bin/kubectl" "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl"
+          chmod +x "$HOME/.local/bin/kubectl"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Configure AWS credentials (OIDC bootstrap role)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.HUB_ROLE_ARN }}
+          role-session-name: gha-oidc-bootstrap
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Assume target account role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-chaining: true
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/oidc_github_runner_admin
+          role-session-name: gha-target-account
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Confirm assumed identity
+        run: "$AWS_BIN" sts get-caller-identity
+
+      - name: Confirm basic AWS API reachability
+        run: |
+          "$AWS_BIN" eks describe-cluster \
+            --name "$EKS_CLUSTER" \
+            --region "$AWS_REGION" \
+            --query 'cluster.{name:name,status:status,version:version}' \
+            --output table
+
+      - name: Configure EKS access
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          "$AWS_BIN" eks update-kubeconfig \
+            --region "$AWS_REGION" \
+            --name "$EKS_CLUSTER"
+          kubectl get nodes
+          kubectl get namespace "$NAMESPACE"
