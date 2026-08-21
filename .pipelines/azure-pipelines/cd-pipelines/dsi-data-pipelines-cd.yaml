@@ -1,0 +1,332 @@
+
+trigger:
+- none
+
+pool:
+  name: '<<YOUR AGENT POOL>>'
+
+parameters:
+- name: environment
+  displayName: 'Select Environment'
+  type: string
+  default: dev
+  values:
+    - dev
+    - devtest
+    - test
+    - pdev
+    - ptest
+    - puat
+- name: cluster
+  displayName: 'Choose DPN Cluster'
+  type: string
+  default: dpn01
+  values:
+    - dpn01
+    - dpn02
+- name: ServiceConnection
+  displayName: 'ServiceConnection details'
+  type: string
+  default: 'sc-dpn-dev-001'
+  values:
+    - sc-dpn-dev-001
+    - sc-dpn-dev-002
+    - sc-dpn-test-001
+    - sc-dpn-test-002
+    - sc-dpn-pdev-ppd-001
+    - sc-dpn-ptest-ppd-001
+    - sc-dpn-puat-ppd-001
+- name: configType
+  displayName: 'Select Config Type'
+  type: string
+  values:
+    - producer
+    - consumer
+- name: processType
+  displayName: 'Select Process Type'
+  type: string
+  default: file
+  values:
+    - file
+    - topic
+- name: productType
+  displayName: 'Enter Product Type'
+  type: string
+  default: default
+- name: schemaType
+  displayName: 'Enter Schema Type (eq/eqbd/ssh/dl..)'
+  default: default
+  type: string
+- name: imageTag
+  type: string
+  displayName: 'Image Tag To Deploy'
+
+# NOTE: pdev/ptest/puat only have one real DPN, but their config file is
+# still named with a -dpn01 suffix (config/pdev-dpn01.json, etc.) for
+# consistency with dev/devtest/test -- so PARAMETERS_FILE below resolves
+# correctly for every environment as long as `cluster` is left at its
+# default (dpn01). There is no *-dpn02.json for pdev/ptest/puat.
+variables:
+  PROJECT_NAME: dsi-data-pipelines
+  PARAMETERS_FILE: '.pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.cluster }}.json'
+  PRODUCT_TYPE: ${{ lower(parameters.productType) }}
+  SCHEMA_TYPE: ${{ lower(parameters.schemaType) }}
+  PROCESS_TYPE: ${{ parameters.processType }}
+  CONFIG_TYPE: ${{ parameters.configType }}
+  IMAGE_TAG: ${{ parameters.imageTag }}
+  # Two approver groups: dsi-devtest for dev/devtest/test, dsi-ppd for
+  # pdev/ptest/puat. Resolved at compile time (not a runtime macro) so it is
+  # also used directly to bind the Approval deployment job's `environment:`,
+  # guaranteeing the approval check is registered correctly.
+  ${{ if in(parameters.environment, 'pdev', 'ptest', 'puat') }}:
+    APPROVAL_GROUP: dsi-ppd
+  ${{ else }}:
+    APPROVAL_GROUP: dsi-devtest
+
+stages:
+# -------------------------------
+# Stage 1 — Approval
+# -------------------------------
+- stage: Approval
+  displayName: "Approval Gate"
+
+  jobs:
+  - deployment: ApprovalJob
+    displayName: "Approve DPN Pipeline Deployment"
+    ${{ if in(parameters.environment, 'pdev', 'ptest', 'puat') }}:
+      environment: dsi-ppd
+    ${{ else }}:
+      environment: dsi-devtest
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - script: |
+              echo "=========================================="
+              echo " APPROVAL REQUIRED BEFORE DEPLOYMENT"
+              echo "=========================================="
+              echo "Environment    : ${{ parameters.environment }}"
+              echo "Approval Group : $(APPROVAL_GROUP)"
+              echo "Config Type    : ${{ parameters.configType }}"
+              echo "Process Type   : ${{ parameters.processType }}"
+              echo "Product Type   : ${{ parameters.productType }}"
+              echo "Schema Type    : ${{ parameters.schemaType }}"
+              echo "Image Tag      : ${{ parameters.imageTag }}"
+              echo "=========================================="
+
+# -------------------------------
+# Stage 2 — Deploy
+# -------------------------------
+- stage: Deploy
+  displayName: "Deploy"
+  dependsOn: Approval
+  condition: succeeded()
+
+  jobs:
+  - job: Deploy
+    displayName: Helm Deploy
+
+    steps:
+
+    - script: |
+        set -euo pipefail
+        echo "================================================="
+        echo "READ ENV VARS FROM FILE"
+        echo "================================================="
+
+        # Ensure parameters file exists
+        if [ -f "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)" ]; then
+          echo "Reading parameters from $(PARAMETERS_FILE)"
+
+          # Loop through each key-value pair in the JSON file and set pipeline variables
+          for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+            value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+
+            # Set the parameter as an Azure DevOps pipeline variable
+            echo "##vso[task.setvariable variable=$param]$value"
+            echo "Set parameter $param with $value"
+          done
+        else
+          echo "Error: $(PARAMETERS_FILE) not found!"
+          exit 1
+        fi
+        echo "READ ENV VARS FROM FILE - OK"
+      displayName: "Read Environment Variables"
+
+    - task: AzureCLI@2
+      displayName: 'AKS Auth'
+      inputs:
+        azureSubscription: ${{ parameters.ServiceConnection }}
+        scriptType: 'bash'
+        addSpnToEnvironment: true
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          set -euo pipefail
+
+          echo "================================================="
+          echo "AZURE AUTH"
+          echo "================================================="
+          az account set --subscription $(AZURE_SUBSCRIPTION_ID)
+          az account show >/dev/null
+          echo "Azure auth OK"
+
+          echo "================================================="
+          echo "INSTALL TOOLS"
+          echo "================================================="
+
+          KUBECTL_VERSION="v1.32.4"
+          KUBELOGIN_VERSION="v0.1.4"
+          HELM_VERSION="v3.17.3"
+
+          if command -v kubectl &>/dev/null; then
+            echo "kubectl already installed: $(kubectl version --client --short 2>/dev/null || kubectl version --client)"
+          else
+            echo "Installing kubectl ${KUBECTL_VERSION}..."
+            az aks install-cli --client-version ${KUBECTL_VERSION} --kubelogin-version ${KUBELOGIN_VERSION}
+          fi
+
+          if command -v kubelogin &>/dev/null; then
+            echo "kubelogin already installed: $(kubelogin --version)"
+          else
+            echo "Installing kubelogin ${KUBELOGIN_VERSION}..."
+            az aks install-cli --client-version ${KUBECTL_VERSION} --kubelogin-version ${KUBELOGIN_VERSION}
+          fi
+
+          if command -v helm &>/dev/null; then
+            echo "helm already installed: $(helm version --short)"
+          else
+            echo "Installing helm ${HELM_VERSION}..."
+            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | \
+              DESIRED_VERSION=${HELM_VERSION} bash
+          fi
+
+          kubectl version --client >/dev/null
+          kubelogin --version >/dev/null
+          helm version >/dev/null
+          echo "Tools ready"
+
+          echo "================================================="
+          echo "AKS CONTEXT"
+          echo "================================================="
+          az aks get-credentials \
+            --resource-group $(RESOURCE_GROUP) \
+            --name $(AKS_CLUSTER) \
+            --overwrite-existing
+
+          kubelogin convert-kubeconfig -l azurecli
+          echo "AKS context ready"
+
+    - task: AzureCLI@2
+      displayName: 'Helm Deploy'
+      inputs:
+        azureSubscription: ${{ parameters.ServiceConnection }}
+        scriptType: 'bash'
+        addSpnToEnvironment: true
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          set -euo pipefail
+
+          az acr login --name $(ACR_NAME)
+
+          # Fresh digest manifest for this pipeline run — one line per deployed component
+          : > "$(Build.SourcesDirectory)/image-digests.txt"
+
+          processCharts() {
+
+            while IFS= read -r chart; do
+              dir_path=$(dirname "$chart")
+
+              CHART_LOCATION=$chart
+              echo "CHART_LOCATION: $CHART_LOCATION"
+              echo "DIR_PATH: $dir_path"
+              base_name=$(basename "$dir_path")
+              echo "BASE_NAME: $base_name"
+              # check if base_name contains schema_mapper and update it to mapper
+              if [[ "$base_name" == *"schema_mapper"* ]]; then
+                  base_name="mapper"
+                  echo "Updated base_name: $base_name"
+              fi
+
+              # Check if PRODUCT_TYPE contains '_' chars and replace them with '-' chars
+              PRODUCT_TYPE=$(echo "$(PRODUCT_TYPE)" | tr '_' '-')
+
+              # IMAGE_NAME=""
+              # PROJECT_NAME=""
+              if [[ "$(CONFIG_TYPE)"  == "producer" ]]; then
+                IMAGE_NAME="$(CONFIG_TYPE)-$(PROCESS_TYPE)-$base_name-$(SCHEMA_TYPE)"
+                POD_NAME="dpn-$(CONFIG_TYPE)-$(PROCESS_TYPE)-$base_name-$PRODUCT_TYPE"
+              elif [[ "$(CONFIG_TYPE)" == "consumer" ]]; then
+                IMAGE_NAME="$(CONFIG_TYPE)-$(PROCESS_TYPE)-$base_name"
+                POD_NAME="dpn-$(CONFIG_TYPE)-$(PROCESS_TYPE)-$base_name"
+              fi
+
+              echo "IMAGE_NAME: $IMAGE_NAME"
+              echo "POD_NAME: $POD_NAME"
+              PROJECT_NAME=${IMAGE_NAME}
+
+              echo "================================================="
+              echo "HELM DEPLOY"
+              echo "================================================="
+              helm upgrade --install $PROJECT_NAME $CHART_LOCATION \
+                --set namespace="$(NAMESPACE)",imageName="${IMAGE_NAME}",imageTag="${{ parameters.imageTag }}" \
+                --set acrName="$(ACR_NAME)",schemaType=$(SCHEMA_TYPE),name="$POD_NAME",productType="$PRODUCT_TYPE" \
+                -n $(NAMESPACE)
+              echo "Helm deploy of $PROJECT_NAME OK"
+
+              echo "================================================="
+              echo "CAPTURE IMAGE DIGEST"
+              echo "================================================="
+              # Must match the repo path + tag the chart actually deploys from
+              # (templates/deployment.yaml): "dsi/<imageName>:<tag>" for consumer,
+              # "dsi/<imageName>:<tag>-<productType>" for producer.
+              if [[ "$(CONFIG_TYPE)" == "producer" ]]; then
+                IMAGE_TAG_FULL="${{ parameters.imageTag }}-${PRODUCT_TYPE}"
+              else
+                IMAGE_TAG_FULL="${{ parameters.imageTag }}"
+              fi
+              IMAGE_REPO_PATH="dsi/${IMAGE_NAME}"
+              IMAGE_DIGEST=$(az acr repository show \
+                --name "$(ACR_NAME)" \
+                --image "${IMAGE_REPO_PATH}:${IMAGE_TAG_FULL}" \
+                --query digest -o tsv 2>/dev/null || echo "unavailable")
+              echo "${IMAGE_REPO_PATH}:${IMAGE_TAG_FULL}@${IMAGE_DIGEST}" >> "$(Build.SourcesDirectory)/image-digests.txt"
+              echo "Digest recorded for $IMAGE_NAME: $IMAGE_DIGEST"
+
+            done < charts.txt
+          }
+
+          # Check for CONFIG_TYPE
+          case "$(CONFIG_TYPE)" in
+            "consumer")
+                echo "Consumer Organization"
+                # Finding all Dockerfile files....
+                find $CONFIG_TYPE/$PROCESS_TYPE -name "charts" \
+                -not -path "./blueprints/*" > charts.txt
+                processCharts
+                ;;
+            "producer")
+                echo "Producer Organization"
+                # Finding all Dockerfile files....
+                find $CONFIG_TYPE/$PROCESS_TYPE/${PRODUCT_TYPE,,} -name "charts" \
+                -not -path "./blueprints/*" > charts.txt
+                processCharts
+                ;;
+          esac
+
+          # Remove file
+          rm charts.txt
+          # echo "================================================="
+          # echo "POST-DEPLOY VERIFICATION"
+          # echo "================================================="
+
+          # kubectl get deployment $(PROJECT_NAME) -n $(NAMESPACE)
+
+          # kubectl rollout status deployment/$(PROJECT_NAME) -n $(NAMESPACE) --timeout=180s
+
+          # echo "================================================="
+          # echo "DSM DEPLOYMENT COMPLETE"
+          # echo "================================================="
+
+    - publish: $(Build.SourcesDirectory)/image-digests.txt
+      artifact: image-digests
+      displayName: "Publish Deployed Image Digests"

@@ -1,0 +1,190 @@
+name: AWS Build & Push Docker Images
+ 
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, devtest, sit, preprod, prod]
+        required: true
+ 
+      cluster:
+        type: choice
+        options: [dpn01, dpn02]
+        required: true
+ 
+      awsRegion:
+        required: true
+ 
+      configType:
+        type: choice
+        options: [producer, consumer]
+        required: true
+ 
+      processType:
+        type: choice
+        options: [file]
+        required: true
+ 
+      productType:
+        default: default
+        required: true
+ 
+      schemaType:
+        default: default
+        required: true
+ 
+permissions:
+  id-token: write
+  contents: read
+ 
+env:
+  ENVIRONMENT: ${{ inputs.environment }}
+  CLUSTER: ${{ inputs.cluster }}
+  AWS_REGION: ${{ inputs.awsRegion }}
+ 
+  CONFIG_TYPE: ${{ inputs.configType }}
+  PROCESS_TYPE: ${{ inputs.processType }}
+  PRODUCT_TYPE: ${{ toLower(inputs.productType) }}
+  SCHEMA_TYPE: ${{ toLower(inputs.schemaType) }}
+ 
+  PARAMETERS_FILE: .pipelines/github-actions-pipelines/aws-pipelines/config/${{ inputs.environment }}-${{ inputs.cluster }}.json
+ 
+jobs:
+ 
+# -------------------------------------------------
+# STAGE 0 — VALIDATE PARAMETERS
+# -------------------------------------------------
+  Validate_Params:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+ 
+      - name: Validate Parameters
+        shell: bash
+        run: |
+          echo "Validating parameters..."
+ 
+          if [[ "$CONFIG_TYPE" == "producer" ]]; then
+            if [[ ! -d "$CONFIG_TYPE/$PROCESS_TYPE/$PRODUCT_TYPE" ]]; then
+              echo "ERROR: Invalid productType $PRODUCT_TYPE"
+              exit 1
+            fi
+          fi
+ 
+# -------------------------------------------------
+# STAGE 1 — LOAD CONFIG & AWS AUTH
+# -------------------------------------------------
+  Prepare:
+    runs-on: ubuntu-latest
+    needs: Validate_Params
+ 
+    steps:
+      - uses: actions/checkout@v4
+ 
+      - name: Load JSON Configuration
+        shell: bash
+        run: |
+          if [[ ! -f "$PARAMETERS_FILE" ]]; then
+            echo "ERROR: Config file not found: $PARAMETERS_FILE"
+            exit 1
+          fi
+ 
+          echo "Loading configuration from $PARAMETERS_FILE"
+          jq -r 'keys[]' "$PARAMETERS_FILE" | while read key; do
+            value=$(jq -r ".\"$key\"" "$PARAMETERS_FILE")
+            echo "$key=$value" >> $GITHUB_ENV
+          done
+ 
+      - name: AWS Authentication (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: $AWS_REGION
+ 
+      - name: Verify AWS Access
+        run: aws sts get-caller-identity
+ 
+# -------------------------------------------------
+# STAGE 2 — BUILD & PUSH DOCKER IMAGES (ECR)
+# -------------------------------------------------
+  BuildAndPush:
+    runs-on: ubuntu-latest
+    needs: Prepare
+ 
+    steps:
+      - uses: actions/checkout@v4
+ 
+      - name: AWS Authentication
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: $AWS_REGION
+ 
+      - name: Login to Amazon ECR (Derived, No Hardcoding)
+        shell: bash
+        run: |
+          ECR_REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          echo "ECR_REGISTRY=$ECR_REGISTRY" >> $GITHUB_ENV
+ 
+          aws ecr get-login-password --region $AWS_REGION | \
+            docker login --username AWS --password-stdin "$ECR_REGISTRY"
+ 
+      - name: Build & Push Docker Images
+        shell: bash
+        run: |
+          set -euo pipefail
+ 
+          processDockerfile() {
+            while IFS= read -r dockerfile; do
+ 
+              dir_path=$(dirname "$dockerfile")
+              base_name=$(basename "$dir_path")
+ 
+              # Normalize schema_mapper
+              if [[ "$base_name" == *"schema_mapper"* ]]; then
+                base_name="mapper"
+              fi
+ 
+              PRODUCT_TYPE_DASHED=$(echo "$PRODUCT_TYPE" | tr '_' '-')
+ 
+              if [[ "$CONFIG_TYPE" == "producer" ]]; then
+                IMAGE_NAME="$CONFIG_TYPE-$PROCESS_TYPE-$base_name-$SCHEMA_TYPE"
+                TAG="v${{ github.run_number }}-$PRODUCT_TYPE_DASHED"
+              else
+                IMAGE_NAME="$CONFIG_TYPE-$PROCESS_TYPE-$base_name"
+                TAG="v${{ github.run_number }}"
+              fi
+ 
+              FULL_IMAGE="$ECR_REGISTRY/dsi/$IMAGE_NAME:$TAG"
+ 
+              echo "-------------------------------------------------"
+              echo "Building image: $FULL_IMAGE"
+              echo "-------------------------------------------------"
+ 
+              docker build -t "$FULL_IMAGE" -f "$dockerfile" .
+              docker push "$FULL_IMAGE"
+ 
+            done < dockerfiles.txt
+          }
+ 
+          if [[ "$CONFIG_TYPE" == "consumer" ]]; then
+            find consumer/$PROCESS_TYPE -name Dockerfile -not -path "./blueprints/*" > dockerfiles.txt
+          else
+            find producer/$PROCESS_TYPE/$PRODUCT_TYPE -name Dockerfile -not -path "./blueprints/*" > dockerfiles.txt
+          fi
+ 
+          processDockerfile
+          rm -f dockerfiles.txt
+# ----------------------------------
+# Cleanup (always)
+# ----------------------------------
+      - name: Cleanup Docker
+        if: always()
+        run: |
+          docker system prune -af
+
+      - name: Cleanup Helm Artifacts
+        if: always()
+        run: |
+          rm -f *.tgz || true

@@ -1,0 +1,193 @@
+name: DSI Data Pipelines CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Select Environment
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - devtest
+          - sit
+          - preprod
+          - prod
+
+      cluster:
+        description: Choose DPN Cluster
+        required: true
+        default: dpn01
+        type: choice
+        options:
+          - dpn01
+          - dpn02
+
+      serviceConnection:
+        description: Select Service Connection
+        required: true
+        default: gcp-dpn-dev-001
+        type: choice
+        options:
+          - gcp-dpn-dev-001
+          - gcp-dpn-dev-002
+          - gcp-dpn-sit-001
+          - gcp-dpn-preprod-001
+          - gcp-dpn-prod-001
+
+      configType:
+        description: Select Config Type
+        required: true
+        type: choice
+        options:
+          - producer
+          - consumer
+
+      processType:
+        description: Select Process Type
+        required: true
+        default: file
+        type: choice
+        options:
+          - file
+
+      productType:
+        description: Enter Product Type
+        required: true
+        default: default
+
+      schemaType:
+        description: Enter Schema Type
+        required: true
+        default: default
+
+env:
+  PARAMETERS_FILE: .pipelines/github-actions-pipelines/gcp-pipelines/config/${{ inputs.environment }}-${{ inputs.cluster }}.json
+  PRODUCT_TYPE: ${{ inputs.productType }}
+  SCHEMA_TYPE: ${{ inputs.schemaType }}
+  PROCESS_TYPE: ${{ inputs.processType }}
+  CONFIG_TYPE: ${{ inputs.configType }}
+  GCP_REGION: ${{ inputs.awsRegion }}
+  CLOC_EXCLUDES: ".docs,.git,node_modules"
+
+# ==========================================================
+# STAGE 1 — Validate Parameters
+# ==========================================================
+jobs:
+
+  validate_params:
+    name: Validate Pipeline Parameters
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Parameters
+        run: |
+          echo "Checking whether product type $PRODUCT_TYPE exists..."
+
+          if [[ "$CONFIG_TYPE" == "producer" ]]; then
+            if [ ! -d "$CONFIG_TYPE/$PROCESS_TYPE/$PRODUCT_TYPE" ]; then
+              echo "Error: Directory $CONFIG_TYPE/$PROCESS_TYPE/$PRODUCT_TYPE does not exist!"
+              echo "Product type $(PRODUCT_TYPE) for config type $(CONFIG_TYPE) does not exist! Please enter a valid product type."
+              exit 1
+            fi
+          fi
+
+# ==========================================================
+# STAGE 2 — Build Docker Images
+# ==========================================================
+  build_and_push:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: validate_params
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # GCP AUTH (replacement of serviceConnection)
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: |
+          gcloud auth configure-docker $GCP_REGION-docker.pkg.dev   #Pending 3 places
+
+      - name: Read Environment Variables from JSON
+        run: |
+          if [ -f "$PARAMETERS_FILE" ]; then
+            echo "Reading parameters from $PARAMETERS_FILE"
+
+            for param in $(jq -r 'keys_unsorted | .[]' "$PARAMETERS_FILE"); do
+              value=$(jq -r ".\"$param\"" "$PARAMETERS_FILE")
+              echo "$param=$value" >> $GITHUB_ENV
+            done
+          else
+            echo "Error: $PARAMETERS_FILE not found!"
+            exit 1
+          fi
+
+      - name: Build and Push Docker Images
+        run: |
+          set -e
+
+          processDockerfile() {
+            while IFS= read -r dockerfile; do
+              dir_path=$(dirname "$dockerfile")
+              base_name=$(basename "$dir_path")
+
+              if [[ "$base_name" == *"schema_mapper"* ]]; then
+                base_name="mapper"
+              fi
+
+              PRODUCT_TYPE=$(echo "$PRODUCT_TYPE" | tr '_' '-')
+
+              if [[ "$CONFIG_TYPE" == "producer" ]]; then
+                IMAGE_NAME="$CONFIG_TYPE-$PROCESS_TYPE-$base_name-$SCHEMA_TYPE"
+                IMAGE="$GCP_REGION-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/repo/$IMAGE_NAME:v${{ github.run_number }}-$PRODUCT_TYPE"
+              else
+                IMAGE_NAME="$CONFIG_TYPE-$PROCESS_TYPE-$base_name"
+                IMAGE="$GCP_REGION-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/repo/$IMAGE_NAME:v${{ github.run_number }}"
+              fi
+
+              docker build -t $IMAGE -f $dockerfile .
+              docker push $IMAGE
+
+              echo "FULL_IMAGE=$IMAGE" >> $GITHUB_ENV
+
+            done < dockerfile_files.txt
+          }
+
+          if [[ "$CONFIG_TYPE" == "consumer" ]]; then
+            find $CONFIG_TYPE/$PROCESS_TYPE -name Dockerfile -not -path "./blueprints/*" > dockerfile_files.txt
+            processDockerfile
+          else
+            find $CONFIG_TYPE/$PROCESS_TYPE/${PRODUCT_TYPE,,} -name Dockerfile -not -path "./blueprints/*" > dockerfile_files.txt
+            processDockerfile
+          fi
+
+          rm dockerfile_files.txt
+
+# ==========================================================
+# CLEANUP (Always)
+# ==========================================================
+      - name: Cleanup Docker
+        if: always()
+        run: |
+          docker system prune -af || true
+
+      - name: Cleanup Helm Artifacts
+        if: always()
+        run: |
+          rm -f *.tgz || true

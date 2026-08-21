@@ -1,0 +1,312 @@
+trigger:
+  - none
+
+pool:
+  name: "<<YOUR AGENT POOL>>"
+
+parameters:
+  - name: ServiceConnection
+    displayName: "ServiceConnection details"
+    type: string
+    default: "sc-dpn-dev-001"
+    values:
+      - sc-dpn-dev-001
+      - sc-dpn-dev-002
+      - sc-dpn-test-001
+      - sc-dpn-test-002
+      - sc-dpn-pdev-ppd-001
+      - sc-dpn-ptest-ppd-001
+      - sc-dpn-puat-ppd-001
+
+  - name: environment
+    displayName: "Select Environment"
+    type: string
+    default: dev
+    values:
+      - dev
+      - devtest
+      - test
+      - pdev
+      - ptest
+      - puat
+
+  - name: cluster
+    displayName: "Choose DPN Cluster"
+    type: string
+    default: dpn01
+    values:
+      - dpn01
+      - dpn02
+
+  - name: prefetchImages
+    displayName: "Prefetch base images to ACR"
+    type: boolean
+    default: false
+
+variables:
+  PROJECT_NAME: dsi-data-pipelines
+  PARAMETERS_FILE: ".pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.cluster }}.json"
+  HELM_DIR: charts/airflow
+  RELEASE_NAME: dpn-airflow
+  VALUES_FILE: "$(HELM_DIR)/values-${{ parameters.environment }}-${{ parameters.cluster }}.yaml"
+  # Two approver groups: dsi-devtest for dev/devtest/test, dsi-ppd for
+  # pdev/ptest/puat. Resolved at compile time; also used directly to bind
+  # the Deploy job's `environment:` so the approval check is registered
+  # correctly (not via a runtime macro).
+  ${{ if in(parameters.environment, 'pdev', 'ptest', 'puat') }}:
+    APPROVAL_GROUP: dsi-ppd
+  ${{ else }}:
+    APPROVAL_GROUP: dsi-devtest
+
+stages:
+  - stage: PrefetchBaseImages
+    displayName: "Prefetch Base Images to ACR"
+    condition: eq('${{ parameters.prefetchImages }}', true)
+
+    jobs:
+      - job: Prefetch
+        displayName: "Prefetch Base Images to ACR"
+        pool:
+          name: "<<YOUR AGENT POOL>>"
+
+        steps:
+          - checkout: self
+          - script: |
+              set -euo pipefail
+              echo "Loading config: $(PARAMETERS_FILE)"
+              echo "Value file : $(VALUES_FILE)"
+
+              for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+                value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+                echo "##vso[task.setvariable variable=$param]$value"
+              done
+            displayName: "Load Environment Config"
+
+          - task: AzureCLI@2
+            displayName: "ACR Login"
+            inputs:
+              azureSubscription: ${{ parameters.ServiceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                echo "ACR: $(ACR_NAME)"
+
+                az acr login --name $(ACR_NAME)
+
+          - script: |
+              set -euo pipefail
+
+              echo "===== PREFETCH BASE IMAGES ====="
+
+              BASE_IMAGES=(
+                "apache/airflow:2.9.1"
+                "postgres:16-alpine"
+                "redis:7.2"
+                "prom/prometheus:v2.52.0"
+                "grafana/grafana:10.4.2"
+                "prom/statsd-exporter:v0.26.1"
+              )
+
+              for IMAGE in "${BASE_IMAGES[@]}"; do
+
+                NAME=$(echo $IMAGE | cut -d':' -f1 | tr '/' '-')
+                TAG=$(echo $IMAGE | cut -d':' -f2)
+                TARGET="$(ACR_NAME).azurecr.io/base/${NAME}:${TAG}"
+
+                echo "Processing $IMAGE → $TARGET"
+
+                docker pull $IMAGE
+                docker tag $IMAGE $TARGET
+                docker push $TARGET
+              done
+
+              echo "===== PREFETCH COMPLETE ====="
+
+  - stage: BuildAirflowImage
+    displayName: "Build & Push Airflow Image"
+
+    jobs:
+      - job: Build
+        displayName: "Docker Build & Push"
+
+        pool:
+          name: "<<YOUR AGENT POOL>>"
+
+        steps:
+          - checkout: self
+
+          - script: |
+              set -euo pipefail
+
+              echo "Loading config: $(PARAMETERS_FILE)"
+
+              for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+                value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+                echo "##vso[task.setvariable variable=$param]$value"
+              done
+            displayName: "Load Environment Config"
+
+          - task: AzureCLI@2
+            displayName: "ACR Login"
+            inputs:
+              azureSubscription: ${{ parameters.ServiceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az acr login --name $(ACR_NAME)
+
+          - script: |
+              set -euo pipefail
+
+              IMAGE_TAG=$(Build.BuildId)
+              IMAGE_NAME="$(ACR_NAME).azurecr.io/airflow/custom:$IMAGE_TAG"
+
+              echo "Building image: $IMAGE_NAME"
+
+              docker build \
+                -f docker/airflow/Dockerfile.airflow \
+                -t $IMAGE_NAME .
+
+              docker push $IMAGE_NAME
+
+              echo "##vso[task.setvariable variable=AIRFLOW_IMAGE]$IMAGE_NAME"
+
+            displayName: "Build & Push Docker Image"
+
+  - stage: Deploy
+    displayName: "Deploy Airflow"
+    jobs:
+      - deployment: DeployAirflow
+        displayName: "Helm Deploy"
+        ${{ if in(parameters.environment, 'pdev', 'ptest', 'puat') }}:
+          environment: dsi-ppd
+        ${{ else }}:
+          environment: dsi-devtest
+
+        pool:
+          name: "<<YOUR AGENT POOL>>"
+
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - script: |
+                    set -euo pipefail
+                    echo "Loading config: $(PARAMETERS_FILE)"
+
+                    for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+                      value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+                      echo "##vso[task.setvariable variable=$param]$value"
+                    done
+                  displayName: "Load Environment Variables"
+
+                - task: AzureCLI@2
+                  displayName: "AKS Auth + Helm Deploy"
+                  inputs:
+                    azureSubscription: ${{ parameters.ServiceConnection }}
+                    scriptType: bash
+                    addSpnToEnvironment: true
+                    scriptLocation: inlineScript
+                    inlineScript: |
+
+                      set -euo pipefail
+                      echo "===== AZURE AUTH ====="
+                      az account set --subscription $(AZURE_SUBSCRIPTION_ID)
+                      az aks install-cli
+                      az aks get-credentials \
+                        --resource-group $(RESOURCE_GROUP) \
+                        --name $(AKS_CLUSTER) \
+                        --overwrite-existing
+
+                      kubelogin convert-kubeconfig -l azurecli
+
+                      az acr login --name $(ACR_NAME)
+
+                      echo "===== ENSURE NAMESPACE ====="
+                      kubectl get ns $(NAMESPACE) || kubectl create ns $(NAMESPACE)
+
+                      echo "===== STORAGE CHECK ====="
+                      kubectl get storageclass
+
+                      echo "===== CSI DRIVER CHECK ====="
+                      kubectl get pods -n kube-system | grep secrets-store || true
+
+                      echo "===== HELM LINT ====="
+                      helm lint $(HELM_DIR) \
+                        -f $(VALUES_FILE)
+
+                      echo "===== DEPLOY TARGET ====="
+                      echo "PARAMETERS_FILE=$(PARAMETERS_FILE)"
+                      echo "RESOURCE_GROUP=$(RESOURCE_GROUP)"
+                      echo "AKS_CLUSTER=$(AKS_CLUSTER)"
+                      echo "NAMESPACE=$(NAMESPACE)"
+                      echo "VALUES_FILE=$(VALUES_FILE)"
+
+                      echo "===== HELM DEPLOY ====="
+                      helm uninstall dpn-airflow -n ns-dpn-01
+                      kubectl delete pod -n ns-dpn-01 -l app.kubernetes.io/instance=dpn-airflow
+                      kubectl delete svc dpn-airflow-webserver -n ns-dpn-01 --ignore-not-found=true
+                      kubectl delete svc dpn-airflow-webserver-external -n ns-dpn-01 --ignore-not-found=true
+                      helm upgrade --install $(RELEASE_NAME) $(HELM_DIR) \
+                        -n $(NAMESPACE) \
+                        -f "$(VALUES_FILE)" \
+                        --set airflow.image.repository=$(ACR_NAME).azurecr.io/airflow/custom \
+                        --set airflow.image.tag=$(Build.BuildId) \
+                        --wait \
+                        --timeout 15m \
+                        --debug \
+                        2>&1 | tee helm.log
+
+                      echo "===== PVC STATUS ====="
+                      kubectl get pvc -n $(NAMESPACE)
+
+                      echo "===== POD STATUS ====="
+                      kubectl get pods -n $(NAMESPACE) -o wide
+
+                      echo "===== SERVICES ====="
+                      kubectl get svc -n $(NAMESPACE)
+
+                      echo "===== DEPLOYMENT COMPLETE ====="
+
+                  continueOnError: true
+
+                - task: AzureCLI@2
+                  displayName: "Diagnostics On Failure"
+                  condition: failed()
+                  inputs:
+                    azureSubscription: ${{ parameters.ServiceConnection }}
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+
+                      az aks get-credentials \
+                        --resource-group $(RESOURCE_GROUP) \
+                        --name $(AKS_CLUSTER) \
+                        --overwrite-existing
+
+                      echo "===== HELM STATUS ====="
+                      helm status $(RELEASE_NAME) -n $(NAMESPACE) || true
+
+                      echo "===== EVENTS ====="
+                      kubectl get events \
+                        -n $(NAMESPACE) \
+                        --sort-by=.lastTimestamp | tail -100 || true
+
+                      echo "===== PVC ====="
+                      kubectl describe pvc dpn-airflow-postgres-pvc \
+                        -n $(NAMESPACE) || true
+
+                      echo "===== PODS ====="
+                      kubectl get pods -n $(NAMESPACE)
+
+                      for p in $(kubectl get pods -n $(NAMESPACE) -o name); do
+                        echo "==============================="
+                        echo "$p"
+                        echo "==============================="
+                        kubectl describe $p -n $(NAMESPACE) || true
+                        kubectl logs $p -n $(NAMESPACE) --all-containers=true --tail=200 || true
+                      done

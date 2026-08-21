@@ -1,0 +1,265 @@
+name: Helm Deploy to EKS
+ 
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        required: true
+      cluster:
+        required: true
+      awsRegion:
+        required: true
+      roleToAssume:
+        required: true
+      KUBECTL_VERSION:
+        required: true
+      HELM_VERSION:
+        required: true
+      configType:
+        required: true
+      processType:
+        required: true
+      productType:
+        required: false
+      schemaType:
+        required: false
+      imageTag:
+        required: true
+      namespace:
+        required: true
+ 
+env:
+  environment: ${{ inputs.environment }}
+  cluster: ${{ inputs.cluster }}
+  awsRegion: ${{ inputs.awsRegion }}
+  roleToAssume: ${{ inputs.roleToAssume }}
+ 
+  KUBECTL_VERSION: ${{ inputs.KUBECTL_VERSION }}
+  HELM_VERSION: ${{ inputs.HELM_VERSION }}
+ 
+  configType: ${{ inputs.configType }}
+  processType: ${{ inputs.processType }}
+  productType: ${{ inputs.productType || '' }}
+  schemaType: ${{ inputs.schemaType || '' }}
+  imageTag: ${{ inputs.imageTag }}
+  NAMESPACE: ${{ inputs.namespace }}
+ 
+  PARAMETERS_FILE: .pipelines/github-actions-pipelines/aws-pipelines/config/${{ inputs.environment }}-${{ inputs.cluster }}.json
+ 
+  PRODUCT_TYPE: ${{ toLower(inputs.productType || '') }}
+  SCHEMA_TYPE: ${{ toLower(inputs.schemaType || '') }}
+  PROCESS_TYPE: ${{ inputs.processType }}
+  CONFIG_TYPE: ${{ inputs.configType }}
+  IMAGE_TAG: ${{ inputs.imageTag }}
+ 
+jobs:
+  Deploy:
+    name: Helm Deploy to EKS
+    runs-on: ubuntu-latest
+ 
+    permissions:
+      id-token: write
+      contents: read
+ 
+    steps:
+      # =========================================================
+      # CHECKOUT SOURCE CODE
+      # =========================================================
+      - name: Checkout code
+        uses: actions/checkout@v4
+ 
+      # =========================================================
+      # READ ENVIRONMENT VARIABLES FROM JSON
+      # =========================================================
+      - name: Read Environment Variables
+        shell: bash
+        run: |
+          set -euo pipefail
+ 
+          if [[ ! -f "$PARAMETERS_FILE" ]]; then
+            echo "ERROR: Parameters file not found"
+            exit 1
+          fi
+ 
+          jq -r 'keys[]' "$PARAMETERS_FILE" | while read param; do
+            value=$(jq -r ".\"$param\"" "$PARAMETERS_FILE")
+            echo "$param=$value" >> $GITHUB_ENV
+          done
+ 
+      # =========================================================
+      # AWS AUTHENTICATION
+      # =========================================================
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.roleToAssume }}
+          aws-region: ${{ env.awsRegion }}
+ 
+      - name: Verify AWS Authentication
+        run: aws sts get-caller-identity
+ 
+      # =========================================================
+      # INSTALL kubectl
+      # =========================================================
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          kubectl version --client
+ 
+      # =========================================================
+      # INSTALL HELM
+      # =========================================================
+      - name: Install Helm
+        run: |
+          curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+          chmod +x get_helm.sh
+          ./get_helm.sh --version "${HELM_VERSION}"
+          helm version
+ 
+      # =========================================================
+      # CONFIGURE EKS ACCESS
+      # =========================================================
+      - name: Configure EKS Access
+        run: |
+          aws eks update-kubeconfig \
+            --region "$awsRegion" \
+            --name "$cluster"
+ 
+          kubectl get namespace "$NAMESPACE" || kubectl create namespace "$NAMESPACE"
+          kubectl get nodes
+ 
+      # =========================================================
+      # REGISTRY LOGIN
+      # =========================================================
+      - name: Login to Container Registry
+        run: |
+          echo "${{ secrets.REGISTRY_PASSWORD }}" | \
+          docker login "${{ secrets.CONTAINER_REGISTRY_URL }}" \
+            --username "${{ secrets.REGISTRY_USERNAME }}" \
+            --password-stdin
+ 
+      # =========================================================
+      # HELM DEPLOYMENT
+      # =========================================================
+      - name: Helm Deploy
+        run: |
+          set -euo pipefail
+ 
+          processCharts() {
+ 
+            while IFS= read -r chart; do
+ 
+              dir_path=$(dirname "$chart")
+              CHART_LOCATION=$chart
+ 
+              echo "================================================="
+              echo "CHART DETAILS"
+              echo "================================================="
+ 
+              echo "CHART_LOCATION: $CHART_LOCATION"
+              echo "DIR_PATH: $dir_path"
+ 
+              base_name=$(basename "$dir_path")
+ 
+              echo "BASE_NAME: $base_name"
+ 
+              # Replace schema_mapper with mapper
+              if [[ "$base_name" == *"schema_mapper"* ]]; then
+                base_name="mapper"
+              fi
+ 
+              # Replace underscore with hyphen
+              PRODUCT_TYPE=$(echo "${{ env.PRODUCT_TYPE }}" | tr '_' '-')
+ 
+              if [[ "${{ env.CONFIG_TYPE }}" == "producer" ]]; then
+ 
+                IMAGE_NAME="${{ env.CONFIG_TYPE }}-${{ env.PROCESS_TYPE }}-$base_name-${{ env.SCHEMA_TYPE }}"
+ 
+                POD_NAME="${{ env.CONFIG_TYPE }}-${{ env.PROCESS_TYPE }}-$base_name-${PRODUCT_TYPE}"
+ 
+              elif [[ "${{ env.CONFIG_TYPE }}" == "consumer" ]]; then
+ 
+                IMAGE_NAME="${{ env.CONFIG_TYPE }}-${{ env.PROCESS_TYPE }}-$base_name"
+ 
+                POD_NAME="${{ env.CONFIG_TYPE }}-${{ env.PROCESS_TYPE }}-$base_name"
+ 
+              fi
+ 
+              echo "IMAGE_NAME: $IMAGE_NAME"
+              echo "POD_NAME: $POD_NAME"
+ 
+              PROJECT_NAME=$IMAGE_NAME
+ 
+              echo "================================================="
+              echo "HELM DEPLOYMENT"
+              echo "================================================="
+ 
+              helm upgrade --install $PROJECT_NAME $CHART_LOCATION \
+                --set namespace="${{ env.NAMESPACE }}" \
+                --set imageName="${IMAGE_NAME}" \
+                --set imageTag="${{ env.IMAGE_TAG }}" \
+                --set imageRepository="${{ env.CONTAINER_REGISTRY_URL }}" \
+                --set schemaType="${{ env.SCHEMA_TYPE }}" \
+                --set name="$POD_NAME" \
+                -n ${{ env.NAMESPACE }}
+ 
+              echo "Deployment successful for:"
+              echo "$PROJECT_NAME"
+ 
+            done < charts.txt
+          }
+ 
+          case "${{ env.CONFIG_TYPE }}" in
+ 
+            "consumer")
+ 
+              echo "================================================="
+              echo "CONSUMER DEPLOYMENT"
+              echo "================================================="
+ 
+              find ${{ env.CONFIG_TYPE }}/${{ env.PROCESS_TYPE }} \
+                -name "charts" \
+                -not -path "./blueprints/*" > charts.txt
+ 
+              processCharts
+              ;;
+ 
+            "producer")
+ 
+              echo "================================================="
+              echo "PRODUCER DEPLOYMENT"
+              echo "================================================="
+ 
+              find ${{ env.CONFIG_TYPE }}/${{ env.PROCESS_TYPE }}/${{ env.PRODUCT_TYPE }} \
+                -name "charts" \
+                -not -path "./blueprints/*" > charts.txt
+ 
+              processCharts
+              ;;
+ 
+          esac
+ 
+          rm -f charts.txt
+ 
+      # =========================================================
+      # POST DEPLOYMENT VERIFICATION
+      # =========================================================
+      - name: Verify Deployment
+        run: |
+          set -euo pipefail
+ 
+          echo "================================================="
+          echo "POST DEPLOYMENT VERIFICATION"
+          echo "================================================="
+ 
+          kubectl get deployments -n ${{ env.NAMESPACE }}
+ 
+          kubectl get pods -n ${{ env.NAMESPACE }}
+ 
+          kubectl get svc -n ${{ env.NAMESPACE }}
+ 
+          echo "================================================="
+          echo "DEPLOYMENT COMPLETED SUCCESSFULLY"
+          echo "================================================="

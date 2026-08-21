@@ -1,0 +1,686 @@
+trigger:
+- none
+
+pool:
+  name: '<<YOUR AGENT POOL>>'
+ 
+parameters:
+- name: environment
+  displayName: 'Select Environment'
+  type: string
+  default: dev
+  values:
+    - dev
+    - devtest
+    - test
+    - pdev
+    - ptest
+    - puat
+- name: cluster
+  displayName: 'Choose DPN Cluster'
+  type: string
+  default: dpn01
+  values:
+    - dpn01
+    - dpn02
+- name: ServiceConnection
+  displayName: 'ServiceConnection details'
+  type: string
+  default: 'sc-dpn-dev-001'
+  values:
+    - sc-dpn-dev-001
+    - sc-dpn-dev-002
+    - sc-dpn-test-001
+    - sc-dpn-test-002
+    - sc-dpn-pdev-ppd-001
+    - sc-dpn-ptest-ppd-001
+    - sc-dpn-puat-ppd-001
+- name: configType
+  displayName: 'Select Config Type'
+  type: string
+  values:
+    - producer
+    - consumer
+- name: processType
+  displayName: 'Select Process Type'
+  type: string
+  default: file
+  values:
+    - file
+    - topic
+- name: productType
+  displayName: 'Enter Product Type'
+  type: string
+  default: default
+- name: schemaType
+  displayName: 'Enter Schema Type (eq/eqbd/ssh/dl..)'
+  type: string
+  default: default
+
+variables:
+- group: soner_report
+- name: PARAMETERS_FILE
+  value: '.pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.cluster }}.json'
+- name: PRODUCT_TYPE
+  value: ${{ lower(parameters.productType) }}
+- name: SCHEMA_TYPE
+  value: ${{ lower(parameters.schemaType) }}
+- name: PROCESS_TYPE
+  value: ${{ parameters.processType }}
+- name: CONFIG_TYPE
+  value: ${{ parameters.configType }}
+- name: CLOC_EXCLUDES
+  value: ".docs,.git,node_modules"
+ 
+stages:
+# ------------------------------
+# Stage 0 — Validate Parameters
+# ------------------------------
+- stage: 'Validate_Params'
+  displayName: 'Validate Pipeline Parameters'
+  jobs:
+  - job: Validate
+    steps:
+    - script: |
+        echo "Checking whether product type $(PRODUCT_TYPE) exists for producer..."
+        # Check if the product type directory exists
+        if [[ $(CONFIG_TYPE) == "producer" ]]; then
+          if [ ! -d "$(CONFIG_TYPE)/$(PROCESS_TYPE)/$(PRODUCT_TYPE)" ]; then
+            echo "Error: Directory $(CONFIG_TYPE)/$(PROCESS_TYPE)/$(PRODUCT_TYPE) does not exist!"
+            echo "Product type $(PRODUCT_TYPE) for config type $(CONFIG_TYPE) does not exist! Please enter a valid product type."
+            exit 1
+          fi
+        fi
+      displayName: 'Validate Parameters'
+# ----------------------------
+# Stage 1 — Checkmarx Scan
+# ----------------------------
+- stage: 'Checkmarx_Scan'
+  displayName: 'CheckMarx One Scan'
+  jobs:
+  - job: 
+    steps:
+    - template: ../CxOneScan.yml
+      parameters:
+        scanType: ''
+        cxoneserviceName: 'checkmarxOne-sc'
+        cxoneProjectName: '$(Build.Repository.Name)'
+        cxoneProjectGroup: 'AZ-APP-CheckmarxOne-NESO'
+        cxoneTenantName: 'neso'
+        # filterPattern: "$(CONFIG_TYPE)/$(PROCESS_TYPE)/$(PRODUCT_TYPE)/"
+        appName: 'Checkmarxone'
+
+# --------------------------------------
+# Stage 2 — Unit_test and Code Coverage
+# -------------------------------------
+- stage: UnitTests
+  displayName: 'Unit Tests & Code Coverage'
+  jobs:
+  - job: RunPythonTests
+    displayName: 'Run pytest with coverage.py'
+    steps:
+    - checkout: self
+
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '3.11'
+
+    - script: |
+        set -e
+        python -m pip install --upgrade pip
+
+        for file in $(find . -name "requirements.txt"); do
+          echo "Installing $file"
+          pip install -r "$file"
+        done
+
+        pip install pytest pytest-cov coverage kubernetes azure-core azure-storage-blob telicent-lib telicent_ies_tool dsi_schema_assurance telicent_label_builder
+
+        # dsi_schema_assurance pins opentelemetry-api==1.29.0, which silently downgrades
+        # the opentelemetry-api==1.42.1 required by opentelemetry-sdk/exporter-otlp above,
+        # breaking the otel import chain. Re-assert the requirements.txt pins so they win.
+        for file in $(find . -name "requirements.txt"); do
+          pip install -r "$file"
+        done
+      displayName: 'Install dependencies'
+
+    - script: |
+        set -e
+        export PYTHONPATH=$(Build.SourcesDirectory)
+
+        mkdir -p "$(Build.SourcesDirectory)/test-results"
+        mkdir -p "$(Build.SourcesDirectory)/coverage"
+
+        pytest tests \
+          --junitxml="$(Build.SourcesDirectory)/test-results/junit.xml" \
+          --cov=blueprints \
+          --cov=producer \
+          --cov=consumer \
+          --cov=utils \
+          --cov-report=xml:"$(Build.SourcesDirectory)/coverage/coverage.xml" \
+          --cov-report=term-missing
+
+        echo "Checking coverage output..."
+        ls -la "$(Build.SourcesDirectory)/coverage"
+
+        test -s "$(Build.SourcesDirectory)/coverage/coverage.xml"
+
+      displayName: 'Run tests with pytest and coverage'
+
+    - task: PublishTestResults@2
+      displayName: 'Publish Unit Test Results'
+      inputs:
+        testResultsFormat: JUnit
+        testResultsFiles: 'test-results/junit.xml'
+        failTaskOnFailedTests: true
+
+    - task: PublishCodeCoverageResults@2
+      displayName: 'Publish Code Coverage'
+      inputs:
+        codeCoverageTool: Cobertura
+        summaryFileLocation: 'coverage/coverage.xml'
+        reportDirectory: 'coverage'
+        failIfCoverageEmpty: true
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Coverage Artifact'
+      inputs:
+        targetPath: 'coverage'
+        artifactName: 'coverage'
+
+    - script: |
+        set -e
+        python -m pip install --upgrade pip
+        pip install cyclonedx-bom
+      displayName: 'Install CycloneDX'
+
+    - script: |
+        set -e
+        mkdir -p sbom-output
+        cyclonedx-py requirements ./requirements.txt -o "sbom-output/dsi-data-pipelines-sbom.json"
+        echo "Generated SBOM files:"
+        ls -l sbom-output
+      displayName: 'Generate SBOMs'
+
+    - script: |
+        set -e
+        sudo apt-get update
+        sudo apt-get install -y cloc
+      displayName: 'Install CLOC'
+
+    - script: |
+        set -e
+        echo "Running CLOC analysis..."
+        cloc . --exclude-dir=$(CLOC_EXCLUDES) \
+          --json --out=cloc-report.json
+
+        echo "CLOC Summary:"
+        cloc . --exclude-dir=$(CLOC_EXCLUDES)
+      displayName: 'Run CLOC (JSON)'
+
+    - script: |
+        set -e
+        echo "Running CLOC analysis..."
+        cloc . --exclude-dir=$(CLOC_EXCLUDES) \
+          --xml --out=cloc-report.xml
+
+        echo "CLOC Summary:"
+        cloc . --exclude-dir=$(CLOC_EXCLUDES)
+      displayName: 'Run CLOC (XML)'
+
+    - script: |
+        set -e
+        echo "Copying CLOC reports to staging directory..."
+        mkdir -p $(Build.ArtifactStagingDirectory)/cloc-reports
+
+        ls -l cloc-report.*
+
+        cp cloc-report.xml $(Build.ArtifactStagingDirectory)/cloc-reports
+        cp cloc-report.json $(Build.ArtifactStagingDirectory)/cloc-reports
+      displayName: 'Copy CLOC Reports'
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish SBOM'
+      inputs:
+        targetPath: 'sbom-output'
+        artifactName: 'SBOM'
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish CLOC Report'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/cloc-reports'
+        ArtifactName: 'cloc-reports'
+
+# -------------------------
+# Stage 3 — Sonar Scan
+# -------------------------
+- stage: 'Sonar_Scan'
+  displayName: 'Sonar Scan'
+  pool:
+    name: '<<YOUR AGENT POOL>>'
+
+  jobs:
+  - job: SonarScan
+    displayName: 'Run SonarQube Analysis and Download Report'
+    workspace:
+      clean: all
+    variables:
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt
+
+    steps:
+    - checkout: self
+
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download Coverage Artifact'
+      inputs:
+        artifact: 'coverage'
+        path: 'coverage'
+
+    - task: DownloadSecureFile@1
+      name: sonarCa
+      displayName: 'Download SonarQube CA certificate'
+      inputs:
+        secureFile: 'sonarcert.pem'
+
+    - script: |
+        set -e
+        sudo cp "$(sonarCa.secureFilePath)" /usr/local/share/ca-certificates/sonarcert.crt
+        sudo update-ca-certificates
+      displayName: 'Install SonarQube CA certificate'
+
+    - script: |
+        set -e
+        python3 --version
+        python3 -m pip install --upgrade pip
+        python3 -m pip install reportlab
+      displayName: 'Use Linux Python and install reportlab'
+
+    - task: SonarQubePrepare@7
+      displayName: 'Prepare SonarQube Analysis'
+      env:
+        NODE_EXTRA_CA_CERTS: $(NODE_EXTRA_CA_CERTS)
+      inputs:
+        SonarQube: 'sonar-neso-sc'
+        scannerMode: 'CLI'
+        configMode: 'manual'
+        cliProjectKey: $(Build.Repository.Name)
+        cliProjectName: $(Build.Repository.Name)
+        cliSources: '.'
+        extraProperties: |
+          sonar.sources=.
+          sonar.language=py
+          sonar.python.coverage.reportPaths=coverage/coverage.xml
+          sonar.exclusions=**/__pycache__/**,**/tests/**,smoke-test/**,**/*.xml,**/*.yaml
+          sonar.coverage.exclusions=**/__init__.py
+
+    - task: SonarQubeAnalyze@7
+      displayName: 'Sonar Scan task'
+      inputs:
+        jdkversion: 'JAVA_HOME'
+
+    - task: SonarQubePublish@7
+      displayName: 'Publish SonarQube Results'
+      env:
+        NODE_EXTRA_CA_CERTS: $(NODE_EXTRA_CA_CERTS)
+      inputs:
+        pollingTimeoutSec: '600'
+
+    - task: Bash@3
+      displayName: "Download SonarQube Reports"
+      env:
+        SQ_URL: "$(sonar_url)"
+        SQ_TOKEN: "$(sonar_token)"
+        SQ_PROJECT: "$(Build.Repository.Name)"
+        SQ_BRANCH: "$(Build.SourceBranchName)"
+#        SQ_BRANCH: "develop"
+      inputs:
+            targetType: inline
+            script: |
+              set -euo pipefail
+
+              REPORT_DIR="$(Build.SourcesDirectory)/sonarReport"
+              mkdir -p "$REPORT_DIR"
+
+              echo "Sonar URL: ${SQ_URL}"
+              echo "Sonar Project: ${SQ_PROJECT}"
+              echo "Sonar Branch: ${SQ_BRANCH}"
+
+              if [ -z "${SQ_URL}" ] || [[ "${SQ_URL}" == \$\(* ]]; then
+                echo "ERROR: sonar_url is empty or unresolved: ${SQ_URL}"
+                exit 1
+              fi
+
+              if [ -z "${SQ_TOKEN}" ] || [[ "${SQ_TOKEN}" == \$\(* ]]; then
+                echo "ERROR: sonar_token is empty or unresolved"
+                exit 1
+              fi
+
+              echo "Checking SonarQube project exists..."
+
+              if curl -k -L -f -sS -u "${SQ_TOKEN}:" -G "${SQ_URL}/api/components/show" \
+                --data-urlencode "component=${SQ_PROJECT}" \
+                -o "$REPORT_DIR/component_check.json"; then
+                echo "Project found in SonarQube."
+              else
+                echo "ERROR: SonarQube project key '${SQ_PROJECT}' was not found."
+                echo "Check that cliProjectKey matches the actual SonarQube project key."
+                exit 1
+              fi
+
+              download_with_branch_or_default() {
+                local endpoint="$1"
+                local output="$2"
+                shift 2
+
+                echo "Trying API with branch: ${SQ_BRANCH}"
+
+                if curl -k -L -f -sS -u "${SQ_TOKEN}:" -G "${SQ_URL}${endpoint}" \
+                  --data-urlencode "component=${SQ_PROJECT}" \
+                  --data-urlencode "branch=${SQ_BRANCH}" \
+                  "$@" \
+                  -o "$output"; then
+                  echo "Downloaded with branch: $output"
+                  return 0
+                fi
+
+                echo "Branch API failed. Retrying without branch..."
+
+                curl -k -L -f -sS -u "${SQ_TOKEN}:" -G "${SQ_URL}${endpoint}" \
+                  --data-urlencode "component=${SQ_PROJECT}" \
+                  "$@" \
+                  -o "$output"
+
+                echo "Downloaded without branch: $output"
+              }
+
+              echo "Downloading project snapshot..."
+              download_with_branch_or_default \
+                "/api/measures/component" \
+                "$REPORT_DIR/sq_project_snapshot.json" \
+                --data-urlencode "metricKeys=alert_status,quality_gate_details,sqale_rating,reliability_rating,security_rating,sqale_debt_ratio,bugs,new_bugs,vulnerabilities,new_vulnerabilities,code_smells,new_code_smells,violations,new_violations,accepted_issues,coverage,new_coverage,line_coverage,branch_coverage,uncovered_lines,uncovered_conditions,duplicated_lines_density,new_duplicated_lines_density,duplicated_lines,duplicated_blocks,duplicated_files,complexity,cognitive_complexity,ncloc,lines,files,classes,functions,statements,security_hotspots,new_security_hotspots,security_hotspots_reviewed,new_security_hotspots_reviewed"
+
+              echo "Downloading metrics history..."
+              download_with_branch_or_default \
+                "/api/measures/search_history" \
+                "$REPORT_DIR/sq_metrics_history.json" \
+                --data-urlencode "metrics=coverage,duplicated_lines_density,bugs,vulnerabilities,code_smells,sqale_rating,reliability_rating,security_rating"
+
+              echo "Downloading security rating history..."
+              download_with_branch_or_default \
+                "/api/measures/search_history" \
+                "$REPORT_DIR/sq_security_rating_history.json" \
+                --data-urlencode "metrics=security_rating"
+
+              echo "All SonarQube JSON files downloaded:"
+              ls -la "$REPORT_DIR"
+
+              test -s "$REPORT_DIR/sq_project_snapshot.json"
+              test -s "$REPORT_DIR/sq_metrics_history.json"
+              test -s "$REPORT_DIR/sq_security_rating_history.json"
+
+    - script: |
+        set -e
+
+        REPORT_DIR="$(Build.SourcesDirectory)/sonarReport"
+        SCRIPT_PATH="$(Build.SourcesDirectory)/.pipelines/azure-pipelines/generate_sonar_pdf.py"
+        OUTPUT_FILE="SonarQube_Report-$(Build.SourceBranchName).pdf"
+
+        echo "Checking PDF generation script..."
+        ls -la "$(Build.SourcesDirectory)/.pipelines/azure-pipelines"
+
+        if [ ! -f "$SCRIPT_PATH" ]; then
+          echo "ERROR: PDF generation script not found at $SCRIPT_PATH"
+          exit 1
+        fi
+
+        echo "Checking JSON files..."
+        ls -la "$REPORT_DIR"
+
+        echo "Generating SonarQube PDF..."
+        python3 "$SCRIPT_PATH" "$REPORT_DIR" "$OUTPUT_FILE"
+
+        echo "Checking generated PDF..."
+        ls -la "$REPORT_DIR"
+
+        test -s "$REPORT_DIR/$OUTPUT_FILE"
+
+        echo "PDF generated successfully: $REPORT_DIR/$OUTPUT_FILE"
+      displayName: 'Generate SonarQube PDF Report'
+
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish SonarQube Report'
+      inputs:
+        PathtoPublish: '$(Build.SourcesDirectory)/sonarReport'
+        ArtifactName: 'SonarQube-Report'
+        publishLocation: 'Container'
+
+
+# -------------------------------------
+# Stage 4 — Build Docker Images
+# -------------------------------------
+- stage: BuildAndPush
+  displayName: Build Docker Images
+  jobs:
+  - job: DockerBuildPush
+    displayName: Build Docker Images
+    steps:
+    - checkout: self
+
+    - script: |
+        # Ensure parameters file exists
+        if [ -f "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)" ]; then
+          echo "Reading parameters from $(PARAMETERS_FILE)"
+
+          # Loop through each key-value pair in the JSON file and set pipeline variables
+          for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+            value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+
+            # Set the parameter as an Azure DevOps pipeline variable
+            echo "##vso[task.setvariable variable=$param]$value"
+            echo "Set parameter $param with $value "
+          done
+        else
+          echo "Error: $(PARAMETERS_FILE) not found!"
+          exit 1
+        fi
+      displayName: "Read Environment Variables"
+
+    #-----------------------------------------
+    # Image Signing with Sigstore/Cosign — set up BEFORE the build loop so
+    # each image can be digest-captured and signed as soon as it's pushed,
+    # instead of once after the whole loop (see below: previously FULL_IMAGE
+    # was only exported after the loop exited, so only the LAST image built
+    # in a multi-Dockerfile run — e.g. consumer's extractor+mapper pair —
+    # ever got a digest captured or a cosign signature; earlier images were
+    # silently skipped).
+    #-----------------------------------------
+
+    # Download cosign key
+    - task: DownloadSecureFile@1
+      name: cosignKey
+      inputs:
+        secureFile: cosign.key
+      displayName: 'Download Cosign Key'
+
+    # Install Cosign binary
+    - script: |
+        curl -sSL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o cosign
+        chmod +x cosign
+        sudo mv cosign /usr/local/bin/
+      displayName: Install Cosign
+
+    # Read secret from AKV
+    - task: AzureKeyVault@2
+      inputs:
+        azureSubscription: '${{ parameters.ServiceConnection }}'
+        keyVaultName: '$(KEY_VAULT_NAME)'
+        secretsFilter: 'COSIGN-PASSWORD'
+        RunAsPreJob: false
+
+    - task: AzureCLI@2
+      displayName: Build, Push, Digest and Sign Docker Images
+      inputs:
+        connectedServiceNameARM: ${{ parameters.ServiceConnection }}
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -e
+
+          az acr login --name $(ACR_NAME)
+
+          cat > /tmp/signing-config.json << 'EOF'
+          {
+            "mediaType": "application/vnd.dev.sigstore.signingconfig.v0.2+json",
+            "caUrls": [],
+            "oidcUrls": [],
+            "rekorTlogUrls": [],
+            "tsaUrls": []
+          }
+          EOF
+
+          # Fresh digest manifest for this pipeline run — one line per built image
+          : > full-image-digest.txt
+
+          processDockerfile() {
+            while IFS= read -r dockerfile; do
+              dir_path=$(dirname "$dockerfile")
+              base_name=$(basename "$dir_path")
+              echo "base_name: $base_name"
+
+              # check if base_name contains schema_mapper and update it to mapper
+              if [[ "$base_name" == *"schema_mapper"* ]]; then
+                  base_name="mapper"
+                  echo "Updated base_name: $base_name"
+              fi
+
+              PRODUCT_TYPE=$(echo "$(PRODUCT_TYPE)" | tr '_' '-')
+              echo "PRODUCT_TYPE: $PRODUCT_TYPE"
+              IMAGE_NAME=""
+              IMAGE=""
+              FULL_IMAGE=""
+              if [[ "$(CONFIG_TYPE)"  == "producer" ]]; then
+                IMAGE_NAME="$(CONFIG_TYPE)-$(PROCESS_TYPE)-$base_name-$(SCHEMA_TYPE)"
+                IMAGE=dsi/${IMAGE_NAME}:v$(Build.BuildNumber)-$PRODUCT_TYPE
+                FULL_IMAGE=$(ACR_NAME).azurecr.io/$IMAGE
+              elif [[ "$(CONFIG_TYPE)" == "consumer" ]]; then
+                IMAGE_NAME="$(CONFIG_TYPE)-$(PROCESS_TYPE)-$base_name"
+                IMAGE=dsi/${IMAGE_NAME}:v$(Build.BuildNumber)
+                FULL_IMAGE=$(ACR_NAME).azurecr.io/$IMAGE
+              fi
+              docker build -t $FULL_IMAGE -f $dockerfile \
+              --build-arg ACR_NAME=$(ACR_NAME) \
+              --build-arg PRODUCT_TYPE=$(PRODUCT_TYPE) .
+              docker push $FULL_IMAGE
+
+              echo "================================================="
+              echo "CAPTURE IMAGE DIGEST"
+              echo "================================================="
+              FULL_IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $FULL_IMAGE)
+              echo "$FULL_IMAGE_DIGEST" >> full-image-digest.txt
+              echo "Digest recorded for $IMAGE_NAME: $FULL_IMAGE_DIGEST"
+
+              echo "================================================="
+              echo "SIGN IMAGE"
+              echo "================================================="
+              cosign sign --key $(cosignKey.secureFilePath) --signing-config /tmp/signing-config.json --yes "$FULL_IMAGE_DIGEST"
+              echo "Signed $IMAGE_NAME"
+
+            done < dockerfile_files.txt
+          }
+
+          # Check for CONFIG_TYPE
+          case "$(CONFIG_TYPE)" in
+            "consumer")
+                echo "Consumer Organization"
+                # Finding all Dockerfile files....
+                find $CONFIG_TYPE/$PROCESS_TYPE -name "Dockerfile" \
+                -not -path "./blueprints/*" > dockerfile_files.txt
+                processDockerfile
+                ;;
+            "producer")
+                echo "Producer Organization"
+                # Finding all Dockerfile files....
+                find $CONFIG_TYPE/$PROCESS_TYPE/${PRODUCT_TYPE,,} -name "Dockerfile" \
+                -not -path "./blueprints/*" > dockerfile_files.txt
+                processDockerfile
+                ;;
+          esac
+
+          # Remove file
+          rm dockerfile_files.txt
+
+          # Export FULL_IMAGE as an Azure DevOps pipeline variable so it can be used
+          # in subsequent tasks (JFrog X-Ray scan below still only scans the last
+          # image built this run — same as before this change; not touching that
+          # here, out of scope for the digest/signing fix).
+          echo "##vso[task.setvariable variable=FULL_IMAGE]$FULL_IMAGE"
+      env:
+        COSIGN_PASSWORD: $(COSIGN-PASSWORD)
+
+    #  Publish the client digest file as an artifact — one line per image
+    # built this run (was previously always exactly one line, even when
+    # multiple images were built; see comment above the cosign setup).
+    - publish: full-image-digest.txt
+      artifact: full-image-digest
+      displayName: Publish Full Image Digest File
+      # overwriteExistingArtifacts: true
+
+    # ---------------------------------------
+    # JFrog X-Ray Set Up
+    # ---------------------------------------
+    - task: DownloadSecureFile@1
+      displayName: Jfrog Certificate Installation
+      name: caCertificate
+      inputs:
+        secureFile: <<your specific value>>.crt
+        retryCount: '1'
+      enabled: true
+
+    - script: |
+        sudo chown root:root $(caCertificate.secureFilePath)
+        sudo chmod a+r $(caCertificate.secureFilePath)
+        sudo ln -s -f -t /etc/ssl/certs/ $(caCertificate.secureFilePath)
+        sudo cp $(caCertificate.secureFilePath) /usr/share/ca-certificates/
+        sudo apt-get -y install zip
+      enabled: true
+      displayName: Install JFrog Certificate
+
+    # ---------------------------------------
+    #  X-Ray Scan Full Image
+    # ---------------------------------------
+    - task: JFrogDocker@1
+      displayName: JFrog X-Ray Scan - full-image-container
+      inputs:
+        command: Scan
+        xrayConnection: Jfrog_Xray_SC
+        imageName: '$FULL_IMAGE'
+        watchesSource: 'none'
+        licenses: false
+        allowBypassArchiveLimits: false
+        threads: '3'
+        skipLogin: true
+        allowFailBuild: true    
+
+    # ------------------------------
+    # CLEANUP DOCKER (ALWAYS RUN)
+    # ------------------------------
+    - script: |
+        echo "Cleaning Docker images & cache..."
+
+        for img in $(BUILT_IMAGES); do
+          docker rmi "$img" || true
+        done
+
+        docker system prune -af || true
+      displayName: Cleanup Docker on agent
+      condition: always()
+
+    # ------------------------------
+    # CLEANUP HELM ARTEFACTS
+    # ------------------------------
+    - script: |
+        echo "Cleaning Helm packages"
+        rm -f *.tgz || true
+      displayName: Cleanup Helm artefacts
+      condition: always()

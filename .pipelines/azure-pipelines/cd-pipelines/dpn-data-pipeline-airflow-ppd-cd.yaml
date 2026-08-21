@@ -1,0 +1,279 @@
+# Airflow Helm deploy pipeline for the single-DPN environments: pdev, ptest,
+# puat (counterpart of dpn-data-pipeline-airflow-cd.yaml for dev/devtest/test,
+# kept as a distinctly-named file). `cluster` only offers dpn01, so
+# PARAMETERS_FILE/VALUES_FILE always target the -dpn01 files, consistent
+# with the naming used for dev/devtest/test. dev/devtest/test are listed in
+# the environment dropdown for parity and resolve correctly here too
+# (against their dpn01 config/values) — use dpn-data-pipeline-airflow-cd.yaml
+# instead if you need dpn02.
+trigger:
+- none
+
+pool:
+  name: '<<YOUR AGENT POOL>>'
+
+parameters:
+- name: ServiceConnection
+  displayName: 'ServiceConnection details'
+  type: string
+  default: 'sc-dpn-dev-001'
+  values:
+    - sc-dpn-dev-001
+    - sc-dpn-dev-002
+    - sc-dpn-test-001
+    - sc-dpn-test-002
+    - sc-dpn-pdev-ppd-001
+    - sc-dpn-ptest-ppd-001
+    - sc-dpn-puat-ppd-001
+
+- name: environment
+  displayName: 'Select Environment'
+  type: string
+  default: pdev
+  values:
+    - dev
+    - devtest
+    - test
+    - pdev
+    - ptest
+    - puat
+
+- name: cluster
+  displayName: 'Choose DPN Cluster'
+  type: string
+  default: dpn01
+  values:
+    - dpn01
+
+- name: prefetchImages
+  displayName: "Prefetch base images to ACR"
+  type: boolean
+  default: false
+
+variables:
+  PROJECT_NAME: dsi-data-pipelines
+  PARAMETERS_FILE: '.pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.cluster }}.json'
+  HELM_DIR: charts/airflow
+  RELEASE_NAME: dpn-airflow
+  VALUES_FILE: '$(HELM_DIR)/values-${{ parameters.environment }}-${{ parameters.cluster }}.yaml'
+  # Two approver groups: dsi-devtest for dev/devtest/test, dsi-ppd for
+  # pdev/ptest/puat. Resolved at compile time; also used directly to bind
+  # the Deploy job's `environment:` so the approval check is registered
+  # correctly (not via a runtime macro).
+  ${{ if in(parameters.environment, 'pdev', 'ptest', 'puat') }}:
+    APPROVAL_GROUP: dsi-ppd
+  ${{ else }}:
+    APPROVAL_GROUP: dsi-devtest
+
+
+stages:
+- stage: PrefetchBaseImages
+  displayName: "Prefetch Base Images to ACR"
+  condition: eq('${{ parameters.prefetchImages }}', true)
+
+  jobs:
+  - job: Prefetch
+    displayName: "Prefetch Base Images to ACR"
+    pool:
+      name: '<<YOUR AGENT POOL>>'
+
+    steps:
+    - checkout: self
+    - script: |
+        set -euo pipefail
+        echo "Loading config: $(PARAMETERS_FILE)"
+        echo "Value file : $(VALUES_FILE)"
+        
+        for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+          value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+          echo "##vso[task.setvariable variable=$param]$value"
+        done
+      displayName: "Load Environment Config"
+      
+    - task: AzureCLI@2
+      displayName: "ACR Login"
+      inputs:
+        azureSubscription: ${{ parameters.ServiceConnection }}
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          echo "ACR: $(ACR_NAME)"
+
+          az acr login --name $(ACR_NAME)
+
+    - script: |
+        set -euo pipefail
+
+        echo "===== PREFETCH BASE IMAGES ====="
+        
+        BASE_IMAGES=(
+          "apache/airflow:2.9.1"
+          "postgres:16-alpine"
+          "redis:7.2"
+          "prom/prometheus:v2.52.0"
+          "grafana/grafana:10.4.2"
+          "prom/statsd-exporter:v0.26.1"
+        )
+        
+        for IMAGE in "${BASE_IMAGES[@]}"; do
+        
+          NAME=$(echo $IMAGE | cut -d':' -f1 | tr '/' '-')
+          TAG=$(echo $IMAGE | cut -d':' -f2)
+          TARGET="$(ACR_NAME).azurecr.io/base/${NAME}:${TAG}"
+        
+          echo "Processing $IMAGE → $TARGET"
+        
+          docker pull $IMAGE
+          docker tag $IMAGE $TARGET
+          docker push $TARGET
+        done
+
+        echo "===== PREFETCH COMPLETE ====="
+
+- stage: BuildAirflowImage
+  displayName: "Build & Push Airflow Image"
+
+  jobs:
+  - job: Build
+    displayName: "Docker Build & Push"
+
+    pool:
+      name: '<<YOUR AGENT POOL>>'
+
+    steps:
+    - checkout: self
+
+    - script: |
+        set -euo pipefail
+
+        echo "Loading config: $(PARAMETERS_FILE)"
+
+        for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+          value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+          echo "##vso[task.setvariable variable=$param]$value"
+        done
+      displayName: "Load Environment Config"
+
+    - task: AzureCLI@2
+      displayName: "ACR Login"
+      inputs:
+        azureSubscription: ${{ parameters.ServiceConnection }}
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          az acr login --name $(ACR_NAME)
+
+    - script: |
+        set -euo pipefail
+
+        IMAGE_TAG=$(Build.BuildId)
+        IMAGE_NAME="$(ACR_NAME).azurecr.io/airflow/custom:$IMAGE_TAG"
+
+        echo "Building image: $IMAGE_NAME"
+
+        docker build \
+          -f docker/airflow/Dockerfile.airflow \
+          -t $IMAGE_NAME .
+
+        docker push $IMAGE_NAME
+
+        echo "##vso[task.setvariable variable=AIRFLOW_IMAGE]$IMAGE_NAME"
+
+        echo "===== CAPTURE IMAGE DIGEST ====="
+        FULL_IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $IMAGE_NAME)
+        echo "$FULL_IMAGE_DIGEST" > $(Build.ArtifactStagingDirectory)/airflow-image-digest.txt
+        echo "Airflow image digest: $FULL_IMAGE_DIGEST"
+
+      displayName: "Build & Push Docker Image"
+
+    - publish: $(Build.ArtifactStagingDirectory)/airflow-image-digest.txt
+      artifact: airflow-image-digest
+      displayName: "Publish Airflow Image Digest"
+
+
+- stage: Deploy
+  displayName: "Deploy Airflow"
+
+  jobs:  
+
+  - deployment: DeployAirflow
+    displayName: "Helm Deploy"
+
+    ${{ if in(parameters.environment, 'pdev', 'ptest', 'puat') }}:
+      environment: dsi-ppd
+    ${{ else }}:
+      environment: dsi-devtest
+
+    pool:
+      name: '<<YOUR AGENT POOL>>'
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+
+          - script: |
+              set -euo pipefail
+              echo "Loading config: $(PARAMETERS_FILE)"
+
+              for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+                value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+                echo "##vso[task.setvariable variable=$param]$value"
+                echo "Set parameter $param with $value"
+              done
+            displayName: "Read Environment Variables"
+      
+          - task: AzureCLI@2
+            displayName: "AKS Auth + Helm Deploy"
+            inputs:
+              azureSubscription: ${{ parameters.ServiceConnection }}
+              scriptType: bash
+              addSpnToEnvironment: true
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+
+                echo "===== AZURE AUTH ====="
+                az account set --subscription $(AZURE_SUBSCRIPTION_ID)
+
+                az aks install-cli
+                az aks get-credentials \
+                  --resource-group $(RESOURCE_GROUP) \
+                  --name $(AKS_CLUSTER) \
+                  --overwrite-existing
+
+                kubelogin convert-kubeconfig -l azurecli
+                az acr login --name $(ACR_NAME)
+
+                echo "===== ENSURE NAMESPACE ====="
+                kubectl get ns $(NAMESPACE) || kubectl create ns $(NAMESPACE)
+
+                echo "===== HELM VALIDATION ====="
+                helm lint $(HELM_DIR) -f $(VALUES_FILE)
+
+                echo "===== HELM DEPLOY ====="
+                # helm uninstall dpn-airflow -n ns-dpn-01
+                # kubectl delete pod -n ns-dpn-01 -l app.kubernetes.io/instance=dpn-airflow
+                helm upgrade --install $(RELEASE_NAME) $(HELM_DIR) \
+                  -n $(NAMESPACE) \
+                  -f "$(VALUES_FILE)" \
+                  --set airflow.image.repository=$(ACR_NAME).azurecr.io/airflow/custom \
+                  --set airflow.image.tag=$(Build.BuildId) \
+                  --atomic --wait --timeout 10m --debug 2>&1 | tee helm.log
+
+                echo "===== HELM FAILURE SUMMARY ====="
+                grep -E "Error:|failed|FAILED" helm.log || true
+
+
+                echo "Helm deploy of $PROJECT_NAME OK"
+
+                echo "===== POST DEPLOY CHECK ====="
+                kubectl get pods -n $(NAMESPACE) -o wide
+
+                echo "===== VERIFY IMAGES ====="
+                kubectl get pods -n $(NAMESPACE) -o jsonpath="{..image}" | tr ' ' '\n'
+
+                echo "===== DEPLOYMENT COMPLETE ====="

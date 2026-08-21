@@ -1,0 +1,44 @@
+FROM docker.io/apache/airflow:2.11.2-python3.11
+
+USER root
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        gnupg \
+        ca-certificates \
+        apt-transport-https \
+        librdkafka-dev && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+USER airflow
+
+COPY --chown=airflow:root docker/airflow/requirements.pipeline.txt /tmp/req.txt
+COPY --chown=airflow:root docker/airflow/packages /tmp/packages
+# Air-gapped install: resolve pipeline deps from the committed cp311 wheelhouse
+# only (--no-index), so the build never reaches PyPI. When requirements change,
+# regenerate docker/airflow/packages by running (needs network, once):
+#   pip wheel --wheel-dir docker/airflow/packages \
+#     -r docker/airflow/requirements.pipeline.txt
+# inside apache/airflow:2.11.2-python3.11 (Debian glibc / cp311 wheels).
+RUN pip install --no-cache-dir --no-index --find-links /tmp/packages -r /tmp/req.txt
+
+# Remove pip. It is not needed to RUN Airflow tasks (deps are baked into the
+# image) and it carries CVE-2018-20225 — a disputed dependency-confusion issue
+# with NO fixed version, so removal is the only remediation. This must run as
+# root: the base image's pip lives in root-owned system site-packages, so an
+# airflow-user uninstall leaves the pip-*.dist-info that Xray flags.
+# NOTE: this disables the base image's _PIP_ADDITIONAL_REQUIREMENTS runtime
+# install feature; keep baking deps into the image (as done here) instead.
+USER root
+RUN python -m pip uninstall -y pip \
+ && rm -rf /usr/local/lib/python3.11/site-packages/pip \
+           /usr/local/lib/python3.11/site-packages/pip-*.dist-info \
+           /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.11 \
+ && find / -name 'pip-*.dist-info' -exec rm -rf {} + 2>/dev/null; true
+USER airflow
+
+COPY --chown=airflow:root charts/airflow/dags/utils /opt/airflow/utils
+
+ENV PYTHONPATH="/opt/airflow/utils:/opt/airflow"
