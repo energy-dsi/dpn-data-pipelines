@@ -86,9 +86,9 @@ statsdPort: 8125    # StatsD metrics port
 # ============================================================
 consumerRetryDelaySecs: 5
 
-OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4317
-OTEL_EXPORTER_OTLP_PROTOCOL: grpc
-OTEL_EXPORTER_OTLP_INSECURE: true
+OTEL_EXPORTER_OTLP_ENDPOINT: https://dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4318
+OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+OTEL_EXPORTER_OTLP_CERTIFICATE: /etc/kafka/secrets/ca.crt   # same CA as KAFKA_SSL_CA_LOCATION (dpn-tls secret)
 SERVICE_NAME: eqbd-topic-schema-mapper-service-name
 SERVICE_VERSION: 1.0.0
 ENVIRONMENT: development
