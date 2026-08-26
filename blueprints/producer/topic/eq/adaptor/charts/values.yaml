@@ -1,85 +1,76 @@
 # ============================================================
 # Deployment Identity
 # ============================================================
-namespace: ns-dpn-01        # Kubernetes namespace for deployment
-name: producer-topic-adaptor   # Initial service name (overwritten below if duplicated)
+namespace: ns-dpn-01 # Kubernetes namespace for deployment
+name: producer-topic-adaptor # Initial service name (overwritten below if duplicated)
 
-acrName: ""                 # Azure Container Registry name (empty = not used)
-imageName: producer-topic-adaptor   # Initial container image name
-imageTag: ""               # Image tag (empty = latest/default)
-
+acrName: "" # Azure Container Registry name (empty = not used)
+imageName: producer-topic-adaptor # Initial container image name
+imageTag: "" # Image tag (empty = latest/default)
 
 # ============================================================
 # Kafka Configuration (Source Cluster)
 # ============================================================
-bootstrapServer: dpn-kafka-src:9092   # Kafka broker endpoint
+bootstrapServer: dpn-kafka-src:9092 # Kafka broker endpoint
 # ============================================================
 # Kafka Security (SASL/TLS — SASL_SSL + SASL_OAUTHBEARER/Keycloak)
 # build_kafka_client_config() reads these KAFKA_*/KAFKA_OAUTH_* vars.
 # See README.md "Kafka Authentication" section for full details.
 # ============================================================
-KAFKA_SECURITY_PROTOCOL: SASL_SSL    # SASL authentication over TLS (set to SSL or PLAINTEXT to opt out)
-KAFKA_SASL_MECHANISM: OAUTHBEARER    # OAuth2 client-credentials via Keycloak
-KAFKA_OAUTH_CLIENT_ID: dpn-service-client        # Keycloak service-account client
-KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-observability/protocol/openid-connect/token
-KAFKA_SSL_CA_LOCATION: /etc/kafka/secrets/ca.crt  # PEM CA cert in dpn-tls secret
+KAFKA_SECURITY_PROTOCOL: SASL_SSL # SASL authentication over TLS (set to SSL or PLAINTEXT to opt out)
+KAFKA_SASL_MECHANISM: OAUTHBEARER # OAuth2 client-credentials via Keycloak
+KAFKA_OAUTH_CLIENT_ID: dpn-service-client # Keycloak service-account client
+KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/DPN-Realm/protocol/openid-connect/token
+KAFKA_SSL_CA_LOCATION: /etc/kafka/secrets/ca.crt # PEM CA cert in dpn-tls secret
 kafkaTlsSecretName: dpn-tls
 kafkaOauthSecretName: kafka-secrets
 
-
-mapperTopicName: dpn-producer-eq-raw   # Topic for raw incoming data
-srcTopicName: dpn-producer-eq-stage    # Source topic consumed by adaptor
-srcGroupId: producer_topic_eq     # Consumer group ID
-
+mapperTopicName: dpn-producer-eq-raw # Topic for raw incoming data
+srcTopicName: dpn-producer-eq-stage # Source topic consumed by adaptor
+srcGroupId: producer_topic_eq # Consumer group ID
 
 # ============================================================
 # Schema Mapping Metadata
 # ============================================================
-orgName: pg              # Organization identifier
-schemaType: eq         # Schema type
+orgName: pg # Organization identifier
+schemaType: eq # Schema type
 productType: eq # Product type
-
 
 # ============================================================
 # ⚠️ Duplicate Key Section (Overrides Above Values)
 # These values will override earlier ones if used by Helm/K8s
 # ============================================================
-namespace: ns-dpn-01     # Final namespace (same as above)
-name: dpn-producer-topic-eq-adaptor   # Final service name
-imageName: producer-topic-eq-adaptor  # Final image name
-
+namespace: ns-dpn-01 # Final namespace (same as above)
+name: dpn-producer-topic-eq-adaptor # Final service name
+imageName: producer-topic-eq-adaptor # Final image name
 
 # ============================================================
 # Pipeline Configuration
 # ============================================================
-PRODUCT_NAME: eq   # Logical product label
+PRODUCT_NAME: eq # Logical product label
 
-SCHEDULER_BACKEND: kafka-trigger   # Execution backend (kafka-trigger / airflow / interval / standalone)
-EXECUTION_MODE: manual             # Execution mode (manual disables automatic runs)
+SCHEDULER_BACKEND: kafka-trigger # Execution backend (kafka-trigger / airflow / interval / standalone)
+EXECUTION_MODE: manual # Execution mode (manual disables automatic runs)
 
-scheduleInterval: 240    # Polling interval (used only for interval scheduler)
-replicaCount: 1          # Number of pod replicas
-
+scheduleInterval: 240 # Polling interval (used only for interval scheduler)
+replicaCount: 1 # Number of pod replicas
 
 # ============================================================
 # Kafka Control Topics
 # ============================================================
-PIPELINE_CONTROL_TOPIC: dpn-pipeline-control   # Topic to trigger pipeline execution
-PIPELINE_STATUS_TOPIC: dpn-pipeline-status     # Topic to send pipeline status updates
-
+PIPELINE_CONTROL_TOPIC: dpn-pipeline-control # Topic to trigger pipeline execution
+PIPELINE_STATUS_TOPIC: dpn-pipeline-status # Topic to send pipeline status updates
 
 # ============================================================
 # Runtime Configuration
 # ============================================================
-DRAIN_IeqE_SECS: 15         # Ieqe time before stopping consumption
+DRAIN_IeqE_SECS: 15 # Ieqe time before stopping consumption
 TOPIC_TASK_TIMEOUT_SECS: 60 # Max runtime per execution
-
 
 # ============================================================
 # Monitoring Configuration
 # ============================================================
-statsdPort: 8125    # StatsD metrics port
-
+statsdPort: 8125 # StatsD metrics port
 
 # ============================================================
 # OpenTelemetry (Tracing & Metrics)

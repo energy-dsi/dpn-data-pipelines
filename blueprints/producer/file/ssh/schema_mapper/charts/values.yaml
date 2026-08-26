@@ -12,11 +12,11 @@ bootstrapServer: dpn-kafka-src:9092
 # build_kafka_client_config() reads these KAFKA_*/KAFKA_OAUTH_* vars.
 # See README.md "Kafka Authentication" section for full details.
 # ============================================================
-KAFKA_SECURITY_PROTOCOL: SASL_SSL    # SASL authentication over TLS (set to SSL or PLAINTEXT to opt out)
-KAFKA_SASL_MECHANISM: OAUTHBEARER    # OAuth2 client-credentials via Keycloak
-KAFKA_OAUTH_CLIENT_ID: dpn-service-client        # Keycloak service-account client
-KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-observability/protocol/openid-connect/token
-KAFKA_SSL_CA_LOCATION: /etc/kafka/secrets/ca.crt  # PEM CA cert in dpn-tls secret
+KAFKA_SECURITY_PROTOCOL: SASL_SSL # SASL authentication over TLS (set to SSL or PLAINTEXT to opt out)
+KAFKA_SASL_MECHANISM: OAUTHBEARER # OAuth2 client-credentials via Keycloak
+KAFKA_OAUTH_CLIENT_ID: dpn-service-client # Keycloak service-account client
+KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/DPN-Realm/protocol/openid-connect/token
+KAFKA_SSL_CA_LOCATION: /etc/kafka/secrets/ca.crt # PEM CA cert in dpn-tls secret
 kafkaTlsSecretName: dpn-tls
 kafkaOauthSecretName: kafka-secrets
 
@@ -26,17 +26,17 @@ mapperTopicName: dpn-producer-ssh-raw
 mapperContainerName: ssh-raw
 targetTopicName: dpn-producer-ssh-target
 targetContainerName: ssh-target
-scheduleInterval: 60  # schedule interval in seconds
+scheduleInterval: 60 # schedule interval in seconds
 orgName: SSH
 schemaType: ""
 
-SCHEDULER_BACKEND : kafka-trigger
+SCHEDULER_BACKEND: kafka-trigger
 EXECUTION_MODE: manual
 PRODUCT_NAME: ssh
 PIPELINE_CONTROL_TOPIC: dpn-pipeline-control
 PIPELINE_STATUS_TOPIC: dpn-pipeline-status
-STATSD_HOST: ''
-STATSD_PORT : 8125
+STATSD_HOST: ""
+STATSD_PORT: 8125
 # ------- AWS Config ------------
 awsEndpointUrl: "<<your specific value>>"
 awsRegion: us-east-1
