@@ -1,65 +1,58 @@
 # ============================================================
 # Kafka Configuration (Source Cluster)
 # ============================================================
-bootstrapServer: dpn-kafka-target:9092   # Kafka broker endpoint (local setup)
+bootstrapServer: dpn-kafka-target:9092 # Kafka broker endpoint (local setup)
 # ============================================================
 # Kafka Security (SASL/TLS — SASL_SSL + SASL_OAUTHBEARER/Keycloak)
 # build_kafka_client_config() reads these KAFKA_*/KAFKA_OAUTH_* vars.
 # See README.md "Kafka Authentication" section for full details.
 # ============================================================
-KAFKA_SECURITY_PROTOCOL: SASL_SSL    # SASL authentication over TLS (set to SSL or PLAINTEXT to opt out)
-KAFKA_SASL_MECHANISM: OAUTHBEARER    # OAuth2 client-credentials via Keycloak
-KAFKA_OAUTH_CLIENT_ID: dpn-service-client        # Keycloak service-account client
-KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-observability/protocol/openid-connect/token
-KAFKA_SSL_CA_LOCATION: /etc/kafka/secrets/ca.crt  # PEM CA cert in dpn-tls secret
+KAFKA_SECURITY_PROTOCOL: SASL_SSL # SASL authentication over TLS (set to SSL or PLAINTEXT to opt out)
+KAFKA_SASL_MECHANISM: OAUTHBEARER # OAuth2 client-credentials via Keycloak
+KAFKA_OAUTH_CLIENT_ID: dpn-service-client # Keycloak service-account client
+KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
+KAFKA_SSL_CA_LOCATION: /etc/kafka/secrets/ca.crt # PEM CA cert in dpn-tls secret
 kafkaTlsSecretName: dpn-tls
 kafkaOauthSecretName: kafka-secrets
 
-
-mapperTopicName: dp-consumer-topic-trfm   # Topic for transformed/mapper data
-srcTopicName: dp-consumer-topic-stage      # Source topic consumed by adaptor
-srcGroupId: consumer_topic_eqbd_pg_gas_test   # Consumer group ID
-
+mapperTopicName: dp-consumer-topic-trfm # Topic for transformed/mapper data
+srcTopicName: dp-consumer-topic-stage # Source topic consumed by adaptor
+srcGroupId: consumer_topic_eqbd_pg_gas_test # Consumer group ID
 
 # ============================================================
 # Deployment Identity
 # ============================================================
-namespace: ns-dpn-01   # Kubernetes namespace
-name: dpn-consumer-topic-eq-neso-oil-adaptor   # Service/deployment name
-imageName: consumer-topic-eq-neso-oil-adaptor  # Container image name
-
+namespace: ns-dpn-01 # Kubernetes namespace
+name: dpn-consumer-topic-eq-neso-oil-adaptor # Service/deployment name
+imageName: consumer-topic-eq-neso-oil-adaptor # Container image name
 
 # ============================================================
 # Pipeline Configuration
 # ============================================================
-PRODUCT_NAME: consumer-topic   # Logical product name used in logs/messages
+PRODUCT_NAME: consumer-topic # Logical product name used in logs/messages
 
-SCHEDULER_BACKEND: kafka-trigger   # Execution backend (kafka-trigger recommended)
-EXECUTION_MODE: manual             # manual = disabled automatic execution
+SCHEDULER_BACKEND: kafka-trigger # Execution backend (kafka-trigger recommended)
+EXECUTION_MODE: manual # manual = disabled automatic execution
 
-scheduleInterval: 240   # Execution interval (seconds, only for interval mode)
-replicaCount: 1         # Number of pod replicas
-
+scheduleInterval: 240 # Execution interval (seconds, only for interval mode)
+replicaCount: 1 # Number of pod replicas
 
 # ============================================================
 # Kafka Control Topics
 # ============================================================
-PIPELINE_CONTROL_TOPIC: dpn-pipeline-control   # Topic to trigger pipeline
-PIPELINE_STATUS_TOPIC: dpn-pipeline-status     # Topic to publish status updates
-
+PIPELINE_CONTROL_TOPIC: dpn-pipeline-control # Topic to trigger pipeline
+PIPELINE_STATUS_TOPIC: dpn-pipeline-status # Topic to publish status updates
 
 # ============================================================
 # Runtime Configuration
 # ============================================================
-DRAIN_IDLE_SECS: 15         # Idle time before stopping consumption
+DRAIN_IDLE_SECS: 15 # Idle time before stopping consumption
 TOPIC_TASK_TIMEOUT_SECS: 60 # Max execution time per run
-
 
 # ============================================================
 # Monitoring Configuration
 # ============================================================
-statsdPort: 8125   # StatsD metrics port
-
+statsdPort: 8125 # StatsD metrics port
 
 # ============================================================
 # OpenTelemetry (Tracing & Metrics)
