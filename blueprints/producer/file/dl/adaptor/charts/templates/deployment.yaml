@@ -126,8 +126,8 @@ spec:
             - name: "TRUSTSTORE_PASSWORD"
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.truststoreSecretName }}
-                  key: truststore-password
+                  name: {{ .Values.kafkaOauthSecretName | default "kafka-secrets" }}
+                  key: KC_HTTPS_TRUST_STORE_PASSWORD
             - name: "SERVICE_NAME"
               value: {{ .Values.SERVICE_NAME | quote }}
             - name: "SERVICE_VERSION"
@@ -139,16 +139,10 @@ spec:
             - name: dpn-tls
               mountPath: /etc/kafka/secrets
               readOnly: true
-            - name: truststore
-              mountPath: /certs
-              readOnly: true
 
       volumes:
         - name: dpn-tls
           secret:
             secretName: {{ .Values.kafkaTlsSecretName | default "dpn-tls" }}
-        - name: truststore
-          secret:
-            secretName: {{ .Values.truststoreSecretName }}
 
       automountServiceAccountToken: false

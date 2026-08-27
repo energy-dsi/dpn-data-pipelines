@@ -54,8 +54,4 @@ PRODUCT_NAME: consumer-file
 
 OTEL_EXPORTER_OTLP_ENDPOINT: https://dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4318
 OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
-# OTLP CA trust comes from the common PKCS12 truststore, the same Secret and
-# password pattern Keycloak uses. otlp_truststore sets
-# OTEL_EXPORTER_OTLP_CERTIFICATE at runtime, so it is not set here.
-truststoreSecretName: dpn-observability-truststore
 ENVIRONMENT: development
