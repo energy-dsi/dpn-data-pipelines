@@ -13,6 +13,10 @@ KAFKA_OAUTH_CLIENT_ID: dpn-service-client # Keycloak service-account client
 KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
 KAFKA_SSL_CA_LOCATION: /etc/kafka/secrets/ca.crt # PEM CA cert in dpn-tls secret
 kafkaTlsSecretName: dpn-tls
+# Secret (key ca.crt) verifying the OTel collector's TLS cert - see
+# charts/tls-ca-sync/health-manifests.yaml, which syncs it from
+# ns-dpn-health-01's dpn-health-tls into this namespace.
+otelTlsSecretName: dpn-health-ca
 kafkaOauthSecretName: kafka-secrets
 
 mapperTopicName: dp-consumer-topic-trfm # Topic for transformed/mapper data
@@ -64,5 +68,6 @@ OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.loc
 consumerRetryDelaySecs: 5
 
 OTEL_EXPORTER_OTLP_PROTOCOL: grpc
-OTEL_EXPORTER_OTLP_INSECURE: true
+OTEL_EXPORTER_OTLP_INSECURE: false
+OTEL_EXPORTER_OTLP_CERTIFICATE: /etc/otel/certs/ca.crt
 ENVIRONMENT: development
