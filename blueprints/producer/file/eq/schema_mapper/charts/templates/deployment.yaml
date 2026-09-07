@@ -135,6 +135,7 @@ spec:
           volumeMounts:
             - name: dpn-tls
               mountPath: /etc/secrets/truststore.jks
+              subPath: truststore.jks
               readOnly: true
 
       volumes:
