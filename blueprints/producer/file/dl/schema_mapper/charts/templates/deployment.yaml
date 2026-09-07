@@ -134,7 +134,7 @@ spec:
 
           volumeMounts:
             - name: dpn-tls
-              mountPath: /etc/kafka/secrets
+              mountPath: /etc/secrets/truststore.jks
               readOnly: true
 
       volumes:
