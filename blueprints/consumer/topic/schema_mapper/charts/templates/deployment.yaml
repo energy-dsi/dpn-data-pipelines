@@ -52,8 +52,6 @@ spec:
                 key: KAFKA_OAUTH_CLIENT_SECRET
           - name: "KAFKA_OAUTH_TOKEN_ENDPOINT_URL"
             value: {{ .Values.KAFKA_OAUTH_TOKEN_ENDPOINT_URL }}
-          - name: "KAFKA_SSL_CA_LOCATION"
-            value: {{ .Values.KAFKA_SSL_CA_LOCATION }}
 
           - name: "srcTopicName"
             value: {{ .Values.srcTopicName }}
@@ -125,7 +123,7 @@ spec:
             valueFrom:
               secretKeyRef:
                 name: {{ .Values.kafkaOauthSecretName | default "kafka-secrets" }}
-                key: KC_HTTPS_TRUST_STORE_PASSWORD
+                key: UNIVERSAL-DPN-CERT-PASSWORD
           
           - name: "ENVIRONMENT"
             value: {{ .Values.ENVIRONMENT }}
