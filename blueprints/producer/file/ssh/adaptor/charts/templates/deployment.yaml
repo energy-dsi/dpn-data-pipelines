@@ -71,8 +71,6 @@ spec:
                   key: KAFKA_OAUTH_CLIENT_SECRET
             - name: "KAFKA_OAUTH_TOKEN_ENDPOINT_URL"
               value: {{ .Values.KAFKA_OAUTH_TOKEN_ENDPOINT_URL | quote }}
-            - name: "KAFKA_SSL_CA_LOCATION"
-              value: {{ .Values.KAFKA_SSL_CA_LOCATION | quote }}
             - name: "productType"
               value: {{ .Values.productType | quote }}
             - name: "mapperConnectionString"
@@ -127,7 +125,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.kafkaOauthSecretName | default "kafka-secrets" }}
-                  key: KC_HTTPS_TRUST_STORE_PASSWORD
+                  key: UNIVERSAL_DPN_CERT_PASSWORD
             - name: "SERVICE_NAME"
               value: {{ .Values.SERVICE_NAME | quote }}
             - name: "SERVICE_VERSION"
@@ -137,7 +135,8 @@ spec:
 
           volumeMounts:
             - name: dpn-tls
-              mountPath: /etc/kafka/secrets
+              mountPath: /etc/secrets/truststore.jks
+              subPath: truststore.jks
               readOnly: true
 
       volumes:
