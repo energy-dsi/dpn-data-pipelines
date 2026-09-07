@@ -125,7 +125,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.kafkaOauthSecretName | default "kafka-secrets" }}
-                  key: UNIVERSAL-DPN-CERT-PASSWORD
+                  key: UNIVERSAL_DPN_CERT_PASSWORD
             - name: "SERVICE_NAME"
               value: {{ .Values.SERVICE_NAME | quote }}
             - name: "SERVICE_VERSION"
