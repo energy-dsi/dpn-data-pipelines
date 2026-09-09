@@ -30,14 +30,8 @@ imageName: consumer-topic-eq-neso-oil-adaptor # Container image name
 # ============================================================
 PRODUCT_NAME: consumer-topic # Logical product name used in logs/messages
 
-OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local
-OTEL_EXPORTER_OTLP_GRPC_PORT: 4317
-OTEL_EXPORTER_OTLP_HTTP_PORT: 4318
+OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4318
 OTEL_EXPORTER_OTLP_INSECURE: false
-
-
-
-
 
 SCHEDULER_BACKEND: kafka-trigger # Execution backend (kafka-trigger recommended)
 EXECUTION_MODE: manual # manual = disabled automatic execution
