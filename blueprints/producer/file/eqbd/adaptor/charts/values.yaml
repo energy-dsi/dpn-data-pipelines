@@ -35,9 +35,9 @@ SCHEDULER_BACKEND: kafka-trigger
 EXECUTION_MODE: manual
 PRODUCT_NAME: eqbd
 
-OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4318
-OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local
 OTEL_EXPORTER_OTLP_INSECURE: false
+
 
 # ------- AWS Config ------------
 awsEndpointUrl: "<<your specific value>>"
