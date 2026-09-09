@@ -38,6 +38,7 @@ productType: dl # Product type
 
 # ============================================================
 # Duplicate Key Section (Overrides Above Values)
+# These values will override earlier ones if used by Helm/K8s
 # ============================================================
 namespace: ns-dpn-01 # Final namespace (same as above)
 name: dpn-producer-topic-dl-adaptor # Final service name
@@ -58,7 +59,7 @@ replicaCount: 1 # Number of pod replicas
 # Kafka Control Topics
 # ============================================================
 PIPELINE_CONTROL_TOPIC: dpn-pipeline-control # Topic to trigger pipeline execution
-PIPELINE_STATUS_TOPIC: dpn-pipeline-status
+PIPELINE_STATUS_TOPIC: dpn-pipeline-status # Topic to send pipeline status updates
 
 # ============================================================
 # Runtime Configuration
