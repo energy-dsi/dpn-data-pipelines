@@ -59,6 +59,13 @@ PRODUCT_NAME: consumer-file
 
 OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4317
 OTEL_EXPORTER_OTLP_PROTOCOL: grpc
-OTEL_EXPORTER_OTLP_INSECURE: false
+# The collector's otlp receiver only has a tls: block under its http
+# protocol (4318) — grpc (4317, what this pod actually dials) is
+# plaintext. INSECURE=false here made the client open a TLS ClientHello
+# against that plaintext port, which the collector can't parse — grpc-core
+# logs "SSL_ERROR_SSL ... WRONG_VERSION_NUMBER" and the export fails with
+# StatusCode.UNAVAILABLE. Keep this true (and OTEL_EXPORTER_OTLP_CERTIFICATE
+# below unused) until the collector's grpc protocol gets its own tls: block.
+OTEL_EXPORTER_OTLP_INSECURE: true
 OTEL_EXPORTER_OTLP_CERTIFICATE: /etc/otel/certs/ca.crt
 ENVIRONMENT: development
