@@ -14,7 +14,6 @@ KAFKA_SECURITY_PROTOCOL: SASL_SSL # SASL authentication over TLS (set to SSL or 
 KAFKA_SASL_MECHANISM: OAUTHBEARER # OAuth2 client-credentials via Keycloak
 KAFKA_OAUTH_CLIENT_ID: dpn-service-client # Keycloak service-account client
 KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
-KAFKA_SSL_CA_LOCATION: /etc/kafka/secrets/ca.crt # PEM CA cert in dpn-tls secret
 kafkaTlsSecretName: dpn-tls
 kafkaOauthSecretName: kafka-secrets
 
@@ -52,6 +51,7 @@ SERVICE_NAME: dpn data pipeline
 SERVICE_VERSION: 1.0.0
 PRODUCT_NAME: consumer-file
 
-OTEL_EXPORTER_OTLP_ENDPOINT: https://dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4318
-OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4318
+OTEL_EXPORTER_OTLP_INSECURE: false
+
 ENVIRONMENT: development
