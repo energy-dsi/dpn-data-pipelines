@@ -1,0 +1,49 @@
+namespace: ns-dpn-01
+name: producer-file-mapper
+cloudProviderType: azure
+acrName: ""
+imageName: producer-file-mapper-eq
+imageTag: ""
+productType: ""
+secretName: eqbd-adaptor-secrets
+bootstrapServer: dpn-kafka-src:9092
+# ============================================================
+# Kafka Security (SASL/TLS — SASL_SSL + SASL_OAUTHBEARER/Keycloak)
+# build_kafka_client_config() reads these KAFKA_*/KAFKA_OAUTH_* vars.
+# See README.md "Kafka Authentication" section for full details.
+# ============================================================
+KAFKA_SECURITY_PROTOCOL: SASL_SSL # SASL authentication over TLS (set to SSL or PLAINTEXT to opt out)
+KAFKA_SASL_MECHANISM: OAUTHBEARER # OAuth2 client-credentials via Keycloak
+KAFKA_OAUTH_CLIENT_ID: dpn-service-client # Keycloak service-account client
+KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
+kafkaTlsSecretName: dpn-tls
+kafkaOauthSecretName: kafka-secrets
+
+srcContainerName: dl-stage
+storageConnectionSecret: producer-file-dp-secret
+mapperTopicName: dpn-producer-dl-raw
+mapperContainerName: dl-raw
+targetTopicName: dpn-producer-dl-target
+targetContainerName: dl-target
+scheduleInterval: 60 # schedule interval in seconds
+orgName: DL
+schemaType: ""
+
+SCHEDULER_BACKEND: kafka-trigger
+EXECUTION_MODE: manual
+PRODUCT_NAME: dl
+
+OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4318
+OTEL_EXPORTER_OTLP_INSECURE: false
+
+PIPELINE_CONTROL_TOPIC: dpn-pipeline-control
+PIPELINE_STATUS_TOPIC: dpn-pipeline-status
+STATSD_HOST: ""
+STATSD_PORT: 8125
+# ------- AWS Config ------------
+awsEndpointUrl: "<<your specific value>>"
+awsRegion: us-east-1
+awsAccessSecret: aws-access-secret
+SERVICE_NAME: dpn data pipeline
+SERVICE_VERSION: 1.0.0
+ENVIRONMENT: development

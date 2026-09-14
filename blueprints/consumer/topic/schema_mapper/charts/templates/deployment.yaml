@@ -52,8 +52,6 @@ spec:
                 key: KAFKA_OAUTH_CLIENT_SECRET
           - name: "KAFKA_OAUTH_TOKEN_ENDPOINT_URL"
             value: {{ .Values.KAFKA_OAUTH_TOKEN_ENDPOINT_URL }}
-          - name: "KAFKA_SSL_CA_LOCATION"
-            value: {{ .Values.KAFKA_SSL_CA_LOCATION }}
 
           - name: "srcTopicName"
             value: {{ .Values.srcTopicName }}
@@ -118,32 +116,26 @@ spec:
           - name: "OTEL_EXPORTER_OTLP_ENDPOINT"
             value: {{ .Values.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
           
-          - name: "OTEL_EXPORTER_OTLP_PROTOCOL"
-            value: {{ .Values.OTEL_EXPORTER_OTLP_PROTOCOL | quote }}
-          
           - name: "OTEL_EXPORTER_OTLP_INSECURE"
             value: {{ .Values.OTEL_EXPORTER_OTLP_INSECURE | quote }}
           
-          - name: "OTEL_EXPORTER_OTLP_CERTIFICATE"
-            value: {{ .Values.OTEL_EXPORTER_OTLP_CERTIFICATE | quote }}
+          - name: "TRUSTSTORE_PASSWORD"
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.kafkaOauthSecretName | default "kafka-secrets" }}
+                key: UNIVERSAL_DPN_CERT_PASSWORD
           
           - name: "ENVIRONMENT"
             value: {{ .Values.ENVIRONMENT }}
           volumeMounts:
             - name: dpn-tls
-              mountPath: /etc/kafka/secrets
-              readOnly: true
-            - name: dpn-otel-ca
-              mountPath: /etc/otel/certs
+              mountPath: /etc/secrets/truststore.jks
+              subPath: truststore.jks
               readOnly: true
 
       volumes:
         - name: dpn-tls
           secret:
             secretName: {{ .Values.kafkaTlsSecretName | default "dpn-tls" }}
-        - name: dpn-otel-ca
-          secret:
-            secretName: {{ .Values.otelTlsSecretName | default "dpn-health-ca" }}
-            optional: true
 
       automountServiceAccountToken: false
