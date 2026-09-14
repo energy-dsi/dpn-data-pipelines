@@ -1,0 +1,6 @@
+apiVersion: v2
+name: producer-topic-schema-mapper
+description: >
+  Generic producer topic-pathway schema mapper. One chart, one image,
+  deployed once per data product — see docs/AKS_DEPLOYMENT.md.
+version: 1.0.0

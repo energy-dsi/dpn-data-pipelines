@@ -1,0 +1,8 @@
+apiVersion: v2
+name: producer-file-adaptor
+description: >
+  Generic producer file-pathway adaptor. One chart, one image, deployed
+  once per data product (helm install <product>-adaptor ... -f values.yaml
+  --set productType=<product>,PRODUCT_NAME=<product>,...) — see
+  docs/AKS_DEPLOYMENT.md.
+version: 1.0.0

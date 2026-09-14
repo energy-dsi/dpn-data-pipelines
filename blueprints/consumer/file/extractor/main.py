@@ -43,7 +43,7 @@ from opentelemetry import context as otel_context
 
 # Internal Utilities
 from utils.config_validator import validate_cloud_config, validate_kafka_config
-from utils.data_transection import DataTransection
+from utils.data_transection import DataTransection, gcp_credentials_from_env
 from utils.exception_handler import HandleExceptions
 from utils.kafka_transection import KafkaTransection
 from dpn_observability_sdk.otel_logger import OtelLogger as Logging
@@ -148,6 +148,10 @@ class ExtractorFileProcess:
             os.getenv("AWS_SECRET_ACCESS_KEY", "")
         ).decode()
         self.aws_region = os.getenv("AWS_REGION", "us-east-1")
+        self.gcp_service_account_info = gcp_credentials_from_env(
+            os.getenv("GCP_SERVICE_ACCOUNT_KEY", "")
+        )
+        self.gcp_project_id = os.getenv("GCP_PROJECT_ID") or None
 
         # ---------------------------------------------------------------------
         # Logger Initialization
@@ -194,6 +198,8 @@ class ExtractorFileProcess:
             aws_access_key_id=self.aws_key_id,
             aws_secret_access_key=self.aws_secret,
             aws_region=self.aws_region,
+            gcp_service_account_info=self.gcp_service_account_info,
+            gcp_project_id=self.gcp_project_id,
             logger=self.logger,
             component_name=self.component_name,
         )

@@ -1,0 +1,75 @@
+# Reference/manual-deploy values for the generic producer file schema mapper.
+# See blueprints/producer/file/adaptor/charts/values.yaml for the general note
+# on how this relates to the self-service UI's dynamic deployment path.
+
+namespace: ns-dpn-dp-01
+name: producer-file-mapper-example
+cloudProviderType: azure
+acrName: ""
+imageName: dpn-producer-file-schema-mapper-generic
+imageTag: latest
+
+bootstrapServer: dpn-kafka.ns-dpn-01.svc.cluster.local:9092
+KAFKA_SECURITY_PROTOCOL: SASL_SSL
+KAFKA_SASL_MECHANISM: OAUTHBEARER
+KAFKA_OAUTH_CLIENT_ID: dpn-service-client
+KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
+KAFKA_SSL_CA_LOCATION: /etc/kafka/secrets/ca.crt
+kafkaTlsSecretName: dpn-tls
+kafkaOauthSecretName: kafka-secrets
+
+productType: example-product
+PRODUCT_NAME: example-product
+orgName: example-org
+
+storageConnectionSecret: producer-file-dp-secret
+mapperContainerName: example-product-mapper
+targetContainerName: example-product-target
+mapperTopicName: dpn-producer-example-product-raw
+targetTopicName: dpn-producer-example-product-target
+scheduleInterval: 60
+
+awsEndpointUrl: ""
+awsRegion: us-east-1
+awsAccessSecret: aws-access-secret
+
+SCHEDULER_BACKEND: interval
+EXECUTION_MODE: automatic
+replicaCount: 1
+
+PIPELINE_CONTROL_TOPIC: dpn-pipeline-control
+PIPELINE_STATUS_TOPIC: dpn-pipeline-status
+
+STATSD_HOST: ""
+STATSD_PORT: 8125
+
+SERVICE_NAME: dpn data pipeline
+SERVICE_VERSION: 1.0.0
+
+OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4317
+OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+OTEL_EXPORTER_OTLP_INSECURE: true
+ENVIRONMENT: production
+
+# See blueprints/producer/file/adaptor/charts/values.yaml for why this
+# defaults to disabled (SCHEDULER_BACKEND=interval doesn't partition work
+# across replicas safely).
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  scaleUp:
+    cpuUtilization: 80
+    memoryUtilization: 80
+  scaleUpBehavior:
+    stabilizationWindowSeconds: 60
+    policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 60
+  scaleDown:
+    stabilizationWindowSeconds: 300
+    policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60

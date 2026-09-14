@@ -39,7 +39,7 @@ from google.api_core.exceptions import GoogleAPIError
 from opentelemetry import context as _otel_context, propagate as _otel_propagate
 
 from utils.config_validator import validate_cloud_config, validate_kafka_config
-from utils.data_transection import DataTransection
+from utils.data_transection import DataTransection, gcp_credentials_from_env
 from utils.exception_handler import HandleExceptions
 from utils.kafka_transection import KafkaTransection
 from dpn_observability_sdk.otel_logger import OtelLogger as Logging
@@ -118,7 +118,6 @@ class SchemaMapper:
 
         # Naming configuration
         self.org_name = os.getenv("orgName", "")
-        self.schema_type = os.getenv("schemaType", "")
         self.file_name = None
 
         # AWS configuration (optional)
@@ -126,6 +125,12 @@ class SchemaMapper:
         self.aws_key_id = base64.b64decode(os.getenv("AWS_ACCESS_KEY_ID", "")).decode()
         self.aws_secret = base64.b64decode(os.getenv("AWS_SECRET_ACCESS_KEY", "")).decode()
         self.aws_region = os.getenv("AWS_REGION", "us-east-1")
+
+        # GCP configuration (optional)
+        self.gcp_service_account_info = gcp_credentials_from_env(
+            os.getenv("GCP_SERVICE_ACCOUNT_KEY", "")
+        )
+        self.gcp_project_id = os.getenv("GCP_PROJECT_ID") or None
 
         # Initialize heartbeat logger (started in __main__)
         self.heartbeat: HeartbeatLogger | None = None
@@ -169,6 +174,8 @@ class SchemaMapper:
             aws_access_key_id=self.aws_key_id,
             aws_secret_access_key=self.aws_secret,
             aws_region=self.aws_region,
+            gcp_service_account_info=self.gcp_service_account_info,
+            gcp_project_id=self.gcp_project_id,
             logger=self.logger,
             component_name=self.component_name,
         )
@@ -188,7 +195,6 @@ class SchemaMapper:
         self.logger.info(
             "schema validation (stub)",
             extra={
-                "schema_type": self.schema_type,
                 "component.name": self.component_name,
             }
         )

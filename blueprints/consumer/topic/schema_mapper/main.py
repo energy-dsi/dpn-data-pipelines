@@ -109,7 +109,6 @@ class TopicSchemaMapper:
         self.retry_delay = int(os.getenv("consumerRetryDelaySecs", "5"))
 
         # Default metadata (used only if headers missing, but NOT for topic creation)
-        self.schema_type = _sanitize(os.getenv("schemaType"))
         self.org_name = _sanitize(os.getenv("orgName"))
         self.product_type = _sanitize(os.getenv("productType"))
 
@@ -147,9 +146,6 @@ class TopicSchemaMapper:
         headers = {k.lower(): v for k, v in headers.items()}
 
         # Support both naming styles
-        schema_type = _sanitize(
-            headers.get("schema_type") or headers.get("schematype")
-        )
         org_name = _sanitize(
             headers.get("org_name") or headers.get("orgname")
         )
@@ -159,14 +155,12 @@ class TopicSchemaMapper:
 
         # 🚨 CRITICAL: Skip invalid metadata
         if (
-            schema_type == "unknown"
-            or org_name == "unknown"
+            org_name == "unknown"
             or product_type == "unknown"
         ):
             self.logger.warning(
                 "Skipping message due to invalid metadata",
                 extra={
-                    "schema_type": schema_type,
                     "org_name": org_name,
                     "product_type": product_type,
                     "component.name": self.component_name,
@@ -176,7 +170,7 @@ class TopicSchemaMapper:
             return
 
         topic_name = (
-            f"dpn-consumer-{org_name}-{schema_type}-{product_type}-target"
+            f"dpn-consumer-{org_name}-{product_type}-target"
         )
 
         resolved = self.tr.resolve(
@@ -260,7 +254,6 @@ class TopicSchemaMapper:
                     span.set_attribute("kafka.destination_topic", self.target_topic)
 
                     enriched_headers = [
-                        ("schemaType", _sanitize(headers.get("schema_type") or headers.get("schematype")).encode()),
                         ("orgName", _sanitize(headers.get("org_name") or headers.get("orgname")).encode()),
                         ("productType", _sanitize(headers.get("product_type") or headers.get("producttype")).encode()),
                         ("processedAt", datetime.now(UTC).isoformat().encode()),
@@ -468,4 +461,4 @@ if __name__ == "__main__":
         component_name=temp_mapper.component_name,
     )
 
-# {"product_type":"eqbdpggas","processed_at":"2026-06-02T14:04:06.603385+00:00","org_name":"neso","schema_type":"eqbd"}
+# {"product_type":"acme-gas","processed_at":"2026-06-02T14:04:06.603385+00:00","org_name":"neso"}

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: producer-file-schema-mapper
+description: >
+  Generic producer file-pathway schema mapper. One chart, one image,
+  deployed once per data product — see docs/AKS_DEPLOYMENT.md.
+version: 1.0.0
