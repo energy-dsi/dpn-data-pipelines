@@ -217,6 +217,15 @@ class AdaptorFileProcess:
             logger=self.logger,
             component_name=self.component_name,
         )
+        # Ensure both containers exist before anything tries to read/write
+        # them — a brand-new self-service product may name a container
+        # that doesn't exist yet in the platform storage account.
+        self.data_trans.ensure_container_exists(
+            self.cloud_provider, self.source_container_name, side="source"
+        )
+        self.data_trans.ensure_container_exists(
+            self.cloud_provider, self.target_container_name, side="target"
+        )
         # Ensure the mapper topic exists before anything tries to
         # produce/subscribe to it. A brand-new self-service product may
         # name a topic that doesn't exist yet on the broker — without

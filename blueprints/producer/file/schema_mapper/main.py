@@ -215,6 +215,15 @@ class SchemaMapper:
             logger=self.logger,
             component_name=self.component_name,
         )
+        # Ensure both containers exist before anything tries to read/write
+        # them — a brand-new self-service product may name a container
+        # that doesn't exist yet in the platform storage account.
+        self.data_trans.ensure_container_exists(
+            self.cloud_provider, self.source_container_name, side="source"
+        )
+        self.data_trans.ensure_container_exists(
+            self.cloud_provider, self.target_container_name, side="target"
+        )
         # Ensure both the topic this consumer subscribes to and the one it
         # produces to exist before the consume loop starts — without this,
         # consumer.subscribe() below fails every poll with
