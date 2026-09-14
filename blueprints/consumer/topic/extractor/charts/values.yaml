@@ -16,14 +16,14 @@ kafkaOauthSecretName: kafka-secrets
 
 mapperTopicName: dp-consumer-topic-trfm # Topic for transformed/mapper data
 srcTopicName: dp-consumer-topic-stage # Source topic consumed by adaptor
-srcGroupId: consumer_topic_eqbd_pg_gas_test # Consumer group ID
+srcGroupId: consumer-topic-extractor # Consumer group ID
 
 # ============================================================
 # Deployment Identity
 # ============================================================
 namespace: ns-dpn-01 # Kubernetes namespace
-name: dpn-consumer-topic-eq-neso-oil-adaptor # Service/deployment name
-imageName: consumer-topic-eq-neso-oil-adaptor # Container image name
+name: dpn-consumer-topic-extractor # Service/deployment name
+imageName: consumer-topic-extractor # Container image name
 
 # ============================================================
 # Pipeline Configuration

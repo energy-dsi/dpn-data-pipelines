@@ -18,7 +18,7 @@ spec:
       containers:
         - name: {{ .Values.name }}
           image: "{{ .Values.acrName }}.azurecr.io/dsi/{{ .Values.imageName }}:{{ .Values.imageTag }}"
-          imagePullPolicy: Always
+          imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
           resources:
             requests:
               memory: "256Mi"
@@ -53,14 +53,17 @@ spec:
           - name: "KAFKA_OAUTH_TOKEN_ENDPOINT_URL"
             value: {{ .Values.KAFKA_OAUTH_TOKEN_ENDPOINT_URL }}
 
-          - name: "srcTopicName"
-            value: {{ .Values.srcTopicName }}
-
           - name: "mapperTopicName"
             value: {{ .Values.mapperTopicName | default "" | quote }}
 
-          - name: "srcGroupId"
-            value: {{ .Values.srcGroupId }}
+          - name: "mapperGroupId"
+            value: {{ .Values.mapperGroupId | quote }}
+
+          - name: "orgName"
+            value: {{ .Values.orgName | quote }}
+
+          - name: "productType"
+            value: {{ .Values.productType | quote }}
 
           - name: "consumerRetryDelaySecs"
             value: {{ .Values.consumerRetryDelaySecs | quote }}

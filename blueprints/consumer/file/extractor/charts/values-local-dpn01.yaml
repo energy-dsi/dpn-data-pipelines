@@ -1,0 +1,42 @@
+# Local minikube overrides — see docs/MINIKUBE_DEPLOYMENT.md.
+# Merge with the chart's own values.yaml:
+#   helm upgrade --install dpn-consumer-file-extractor \
+#     blueprints/consumer/file/extractor/charts \
+#     -f blueprints/consumer/file/extractor/charts/values-local-dpn01.yaml \
+#     -n ns-dpn-dp-01 --create-namespace
+
+# This chart's image template ("{{ .Values.imageRegistry }}/{{ .Values.imageName }}:{{ .Values.imageTag }}",
+# see templates/deployment.yaml) has no default at all, so imageRegistry
+# needs a real (if fictitious, for minikube) value — an empty string
+# would render a leading "/" with nothing before it.
+namespace: ns-dpn-dp-01
+imageRegistry: <<CONTAINER_REGISTRY_URL>>/dsi
+imageTag: local
+# minikube's own Docker daemon has the image cached under this exact
+# tag (Step 2) - Always (this chart's hardcoded prior default) would try
+# to actually reach the fictitious registry hostname above and fail.
+imagePullPolicy: IfNotPresent
+
+bootstrapServer: dpn-kafka.ns-dpn-dp-01.svc.cluster.local:9092
+KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+KAFKA_SASL_MECHANISM: ""
+KAFKA_OAUTH_CLIENT_ID: ""
+KAFKA_OAUTH_TOKEN_ENDPOINT_URL: ""
+kafkaTlsSecretName: ""
+
+# AWS/MinIO instead of the chart's Azure default — no Storage account
+# needed locally.
+cloudProviderType: aws
+awsEndpointUrl: "http://dpn-minio.ns-dpn-dp-01.svc.cluster.local:9000"
+awsRegion: us-east-1
+# kubectl create secret generic aws-access-secret -n ns-dpn-dp-01 \
+#   --from-literal=AWS_ACCESS_KEY_ID=minioadmin \
+#   --from-literal=AWS_SECRET_ACCESS_KEY=minioadmin
+awsAccessSecret: aws-access-secret
+
+# No collector running locally by default — see service/charts/values-
+# local-dpn01.yaml's matching comment.
+OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-dp-01.svc.cluster.local:4318
+OTEL_EXPORTER_OTLP_INSECURE: true
+
+ENVIRONMENT: local

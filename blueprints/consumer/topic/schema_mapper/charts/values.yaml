@@ -14,16 +14,17 @@ KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local
 kafkaTlsSecretName: dpn-tls
 kafkaOauthSecretName: kafka-secrets
 
-mapperTopicName: dp-consumer-topic-trfm # Topic for transformed/mapper data
-srcTopicName: dp-consumer-topic-stage # Source topic consumed by adaptor
-srcGroupId: consumer_topic_eqbd_pg_gas_test # Consumer group ID
+mapperTopicName: dp-consumer-topic-trfm # RAW topic this schema mapper consumes
+mapperGroupId: consumer-topic-mapper # Consumer group ID
+orgName: dpn # Organisation identifier used for target topic naming
+productType: consumer-topic # Product identifier used for target topic naming
 
 # ============================================================
 # Deployment Identity
 # ============================================================
 namespace: ns-dpn-01 # Kubernetes namespace
-name: dpn-consumer-topic-eq-neso-oil-adaptor # Service/deployment name
-imageName: consumer-topic-eq-neso-oil-adaptor # Container image name
+name: dpn-consumer-topic-mapper # Service/deployment name
+imageName: consumer-topic-mapper # Container image name — matches the AKS/AWS CD pipelines' build_and_push tag
 
 # ============================================================
 # Pipeline Configuration

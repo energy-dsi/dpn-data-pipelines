@@ -18,7 +18,7 @@ spec:
       containers:
         - name: {{ .Values.name }}
           image: "{{ .Values.acrName }}.azurecr.io/dsi/{{ .Values.imageName }}:{{ .Values.imageTag }}"
-          imagePullPolicy: Always
+          imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
           resources:
             requests:
               memory: "128Mi"

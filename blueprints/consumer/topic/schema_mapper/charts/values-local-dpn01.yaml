@@ -1,0 +1,29 @@
+# Local minikube overrides — see docs/MINIKUBE_DEPLOYMENT.md.
+# Merge with the chart's own values.yaml:
+#   helm upgrade --install dpn-consumer-topic-mapper \
+#     blueprints/consumer/topic/schema_mapper/charts \
+#     -f blueprints/consumer/topic/schema_mapper/charts/values-local-dpn01.yaml \
+#     -n ns-dpn-dp-01 --create-namespace
+
+# This chart's image template is "{{ .Values.acrName }}.azurecr.io/dsi/..."
+# (see templates/deployment.yaml) — see the matching comment in
+# blueprints/consumer/topic/extractor/charts/values-local-dpn01.yaml.
+namespace: ns-dpn-dp-01
+acrName: local
+imageTag: local
+# minikube's own Docker daemon has the image cached under this exact
+# tag (Step 2) - Always (this chart's hardcoded prior default) would try
+# to actually reach the fictitious registry hostname above and fail.
+imagePullPolicy: IfNotPresent
+
+bootstrapServer: dpn-kafka.ns-dpn-dp-01.svc.cluster.local:9092
+KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+KAFKA_SASL_MECHANISM: ""
+KAFKA_OAUTH_CLIENT_ID: ""
+KAFKA_OAUTH_TOKEN_ENDPOINT_URL: ""
+kafkaTlsSecretName: ""
+
+OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-dp-01.svc.cluster.local:4318
+OTEL_EXPORTER_OTLP_INSECURE: true
+
+ENVIRONMENT: local
