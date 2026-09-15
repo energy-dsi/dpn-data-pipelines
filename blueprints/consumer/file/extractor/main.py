@@ -1,17 +1,31 @@
 """
 Extractor — Consumer File Pipeline
 
-This module implements the extractor stage of the file pipeline.
+This module implements the file pipeline's single container: discovers
+files in the source container and copies them straight to the target
+container, publishing one Kafka event per file to targetTopicName.
+
+There is no separate schema_mapper stage any more — the extractor absorbed
+it entirely (staging container + mapperTopicName relay removed), the same
+way blueprints/producer/{file,topic}/adaptor/main.py absorbed their own
+schema mappers. See that changelog for the rationale; the consumer side
+never renamed files either (schema_mapper.move_file always wrote back
+under the exact incoming name), so merging the two steps changes no
+observable file-naming behavior, only removes the intermediate hop.
 
 Responsibilities:
 - Poll source container for files
-- Copy files into mapper staging container
-- Publish Kafka events for downstream processing
+- Copy files directly into the target container
+- Publish one Kafka event per copied file to targetTopicName
 
 Version History
 ---------------
 v1.0.0  Initial release
 v1.1.0  Added Kafka trigger backend + StepLogger (2026-05-26)
+v1.2.0  OTEL Collector Integration (2026-06-26)
+v2.0.0  Absorbed schema_mapper — direct source -> target copy, single
+        publish to targetTopicName, no staging container/mapper topic
+        (2026-09-15)
 
 Execution (Kubernetes Recommended)
 ---------------------------------
@@ -24,13 +38,13 @@ PRODUCT_NAME=consumer-file
 # | 1.0.0   | Initial version                                          | DSI Team      | 2026-05-01  |
 # | 1.1.0   | Kafka Trigger and StepLogger Integration                 | DSI Team      | 2026-05-26  |
 # | 1.2.0   | OTEL Collector Integration                               | DSI Team      | 2026-06-26  |
+# | 2.0.0   | Absorbed schema_mapper — single container, direct copy   | DSI Team      | 2026-09-15  |
 # +---------+----------------------------------------------------------+---------------+-------------+
 
 from __future__ import annotations
 
 import base64
 import os
-import time
 from datetime import UTC, datetime
 
 # Cloud Exceptions
@@ -65,12 +79,12 @@ load_dotenv()
 # =============================================================================
 class ExtractorFileProcess:
     """
-    Handles file extraction workflow.
+    Handles the whole file pipeline in one pass.
 
     Responsibilities:
     - Discover files from source storage
-    - Copy files to staging container
-    - Publish Kafka events
+    - Copy files directly to the target container
+    - Publish one Kafka event per file to targetTopicName
     """
 
     def __init__(self) -> None:
@@ -86,11 +100,11 @@ class ExtractorFileProcess:
         # Initialize OpenTelemetry
         self.tracer = OtelTracer.initialize(
             service_name="consumer-file-extractor",
-            service_version="1.0.0"
+            service_version="2.0.0"
         )
         self.meter = OtelMetrics.initialize(
             service_name="consumer-file-extractor",
-            service_version="1.0.0"
+            service_version="2.0.0"
         )
 
         # Create metrics
@@ -123,18 +137,18 @@ class ExtractorFileProcess:
         # Environment Configuration
         # ---------------------------------------------------------------------
         self.cloud_provider = os.getenv("cloudProviderType", "azure")
-        self.kafka_topic = os.getenv("mapperTopicName", "")
+        self.kafka_topic = os.getenv("targetTopicName", "")
 
         # Azure Configuration
         self.src_conn = base64.b64decode(
             os.getenv("srcConnectionString", "")
         ).decode()
         self.tgt_conn = base64.b64decode(
-            os.getenv("mapperConnectionString", "")
+            os.getenv("targetConnectionString", "")
         ).decode()
 
         self.src_container = os.getenv("srcContainerName", "")
-        self.tgt_container = os.getenv("mapperContainerName", "")
+        self.tgt_container = os.getenv("targetContainerName", "")
 
         # Kafka Configuration
         self.bootstrap = os.getenv("bootstrapServer", "")
@@ -147,7 +161,7 @@ class ExtractorFileProcess:
         self.aws_secret = base64.b64decode(
             os.getenv("AWS_SECRET_ACCESS_KEY", "")
         ).decode()
-        self.aws_region = os.getenv("AWS_REGION", "us-east-1")
+        self.aws_region = os.getenv("AWS_REGION", "eu-west-2")
         self.gcp_service_account_info = gcp_credentials_from_env(
             os.getenv("GCP_SERVICE_ACCOUNT_KEY", "")
         )
@@ -163,20 +177,20 @@ class ExtractorFileProcess:
         # ---------------------------------------------------------------------
         validate_cloud_config(
             cloud_provider=self.cloud_provider,
-            azure_fields=["srcConnectionString", "mapperConnectionString"],
+            azure_fields=["srcConnectionString", "targetConnectionString"],
             logger=self.logger,
         )
-        validate_kafka_config(logger=self.logger)
+        validate_kafka_config(logger=self.logger, require_mapper_topic=False)
 
-        # Resolve mapper topic name
+        # Resolve target topic name
         topic_resolver = TopicResolver()
         self.kafka_topic = topic_resolver.resolve(
             self.kafka_topic,
             self.kafka_topic,
-            "trfm"
+            "target"
         )
 
-        # Ensure mapper topic exists
+        # Ensure target topic exists
         topic_manager = KafkaTopicManager(
             bootstrap_server=self.bootstrap,
             logger=self.logger
@@ -251,11 +265,11 @@ class ExtractorFileProcess:
                 extra={"count": len(files), "component.name": self.component_name},
             )
             return files
-        
+
     @traced(span_name="process_file")
     def process_file(self, file):
         """
-        Copy a file from source to target staging.
+        Copy a file directly from source to the target container.
 
         Args:
             file (str): File name.
@@ -274,6 +288,7 @@ class ExtractorFileProcess:
                 result = self.data_trans.file_copy(
                     cloud_vendor=self.cloud_provider,
                     file_name=file,
+                    dest_file_name=file,
                 )
 
                 duration_ms = int(
@@ -303,7 +318,7 @@ class ExtractorFileProcess:
                 )
 
                 # Capture this span's context so publish_event() below can
-                # inject it as the parent trace context for the mapper span.
+                # inject it as the parent trace context for the target span.
                 self._file_span_context = otel_context.get_current()
 
                 return result.copied
@@ -405,7 +420,7 @@ def run(ctx: PipelineContext) -> None:
             service_name="consumer-file-extractor",
             config_summary={
                 "cloudProviderType": proc.cloud_provider,
-                "mapperTopicName": proc.kafka_topic,
+                "targetTopicName": proc.kafka_topic,
                 "SCHEDULER_BACKEND": os.getenv("SCHEDULER_BACKEND", "standalone"),
                 "PRODUCT_NAME": os.getenv("PRODUCT_NAME", "consumer-file"),
             },

@@ -12,17 +12,22 @@ bootstrapServer: dpn-kafka.ns-dpn-01.svc.cluster.local:9092
 KAFKA_SECURITY_PROTOCOL: SASL_SSL
 KAFKA_SASL_MECHANISM: OAUTHBEARER
 KAFKA_OAUTH_CLIENT_ID: dpn-service-client
-KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
+KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak-service-lb.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
 KAFKA_SSL_CA_LOCATION: /etc/kafka/secrets/ca.crt
 kafkaTlsSecretName: dpn-tls
 kafkaOauthSecretName: kafka-secrets
 
 PRODUCT_NAME: example-product
 orgName: example-org
+# Used (along with orgName above) to compute the target topic name this
+# adaptor produces straight to — dpn-producer-<org>-<product>-target — and
+# to stamp both onto every message's headers. See
+# blueprints/producer/topic/adaptor/main.py's v3.0.0 changelog entry: the
+# schema mapper that used to own this computation was absorbed here.
+productType: example-product
 
 srcTopicName: dpn-producer-example-product-src
 srcGroupId: producer-topic-adaptor-example-product
-mapperTopicName: dpn-producer-example-product-raw
 consumerRetryDelaySecs: 5
 TOPIC_TASK_TIMEOUT_SECS: 60
 

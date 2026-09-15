@@ -44,8 +44,6 @@ spec:
               value: {{ .Values.scheduleInterval | quote }}
             - name: "cloudProviderType"
               value: {{ .Values.cloudProviderType | quote }}
-            - name: "mapperTopicName"
-              value: {{ .Values.mapperTopicName | quote }}
             - name: "targetTopicName"
               value: {{ .Values.targetTopicName | quote }}
             - name: "srcConnectionString"
@@ -54,16 +52,16 @@ spec:
                   name: {{ .Values.storageConnectionSecret }}
                   key: SRC_CONNECTION_STRING
                   optional: true
-            - name: "mapperConnectionString"
+            - name: "targetConnectionString"
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.storageConnectionSecret }}
-                  key: MAPPER_CONNECTION_STRING
+                  key: TARGET_CONNECTION_STRING
                   optional: true
             - name: "srcContainerName"
               value: {{ .Values.srcContainerName | quote }}
-            - name: "mapperContainerName"
-              value: {{ .Values.mapperContainerName | quote }}
+            - name: "targetContainerName"
+              value: {{ .Values.targetContainerName | quote }}
             - name: "bootstrapServer"
               value: {{ .Values.bootstrapServer | quote }}
             - name: "KAFKA_SECURITY_PROTOCOL"
@@ -89,9 +87,15 @@ spec:
             - name: "orgName"
               value: {{ .Values.orgName | quote }}
             - name: "AWS_ENDPOINT_URL"
-              value: {{ .Values.awsEndpointUrl | quote }}
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Values.name }}-aws-config
+                  key: AWS_ENDPOINT_URL
             - name: "AWS_REGION"
-              value: {{ .Values.awsRegion | quote }}
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Values.name }}-aws-config
+                  key: AWS_REGION
             - name: "AWS_ACCESS_KEY_ID"
               valueFrom:
                 secretKeyRef:

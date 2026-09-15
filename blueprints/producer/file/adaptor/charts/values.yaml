@@ -22,7 +22,7 @@ bootstrapServer: dpn-kafka.ns-dpn-01.svc.cluster.local:9092
 KAFKA_SECURITY_PROTOCOL: SASL_SSL
 KAFKA_SASL_MECHANISM: OAUTHBEARER
 KAFKA_OAUTH_CLIENT_ID: dpn-service-client
-KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
+KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak-service-lb.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
 KAFKA_SSL_CA_LOCATION: /etc/kafka/secrets/ca.crt
 kafkaTlsSecretName: dpn-tls
 kafkaOauthSecretName: kafka-secrets
@@ -33,14 +33,17 @@ orgName: example-org
 
 srcContainerName: example-product-stage
 storageConnectionSecret: producer-file-dp-secret
-mapperContainerName: example-product-mapper
-mapperTopicName: dpn-producer-example-product-raw
+targetContainerName: example-product-target
 targetTopicName: dpn-producer-example-product-target
 scheduleInterval: 60
 
 # ------- AWS Config (used when cloudProviderType: aws) ------------
+# Populates the {{ .Values.name }}-aws-config ConfigMap (templates/
+# configmap.yaml) rather than being baked into the Deployment as literal
+# env values — an operator can edit that ConfigMap + restart the pod to
+# change region/endpoint per environment without a helm upgrade.
 awsEndpointUrl: ""
-awsRegion: us-east-1
+awsRegion: eu-west-2
 awsAccessSecret: aws-access-secret
 
 SCHEDULER_BACKEND: interval

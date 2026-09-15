@@ -17,7 +17,11 @@ imageTag: local
 # to actually reach the fictitious registry hostname above and fail.
 imagePullPolicy: IfNotPresent
 
-bootstrapServer: dpn-kafka.ns-dpn-dp-01.svc.cluster.local:9092
+# Consumers read from the TARGET cluster (dpn-kafka-target), the
+# shared/federated Kafka — matches service/compose.yaml's own
+# consumer-side convention and the producer/self-service side's use of
+# dpn-kafka-src. There is no plain "dpn-kafka" Deployment in this cluster.
+bootstrapServer: dpn-kafka-target.ns-dpn-dp-01.svc.cluster.local:9092
 KAFKA_SECURITY_PROTOCOL: PLAINTEXT
 KAFKA_SASL_MECHANISM: ""
 KAFKA_OAUTH_CLIENT_ID: ""

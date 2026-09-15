@@ -19,22 +19,31 @@
 # | 1.1.0   | Airflow Integration Release                              | DSI Team      | 2026-06-27  |
 # | 1.2.0   | OTEL Collector Integration                               | DSI Team      | 2026-06-27  |
 # | 2.0.0   | Genericised — one image for every schema type/product    | DSI Team      | 2026-08-30  |
+# | 3.0.0   | Schema mapper absorbed into adaptor — no mapper           | DSI Team      | 2026-09-14  |
+# |         | container/topic; adaptor reads source and writes         |               |             |
+# |         | straight to target in one hop.                           |               |             |
+# | 3.1.0   | Removed the org-prefixed rename entirely — a file lands  | DSI Team      | 2026-09-15  |
+# |         | in the target container under the exact name it arrived  |               |             |
+# |         | with, no exceptions.                                     |               |             |
 # +---------+----------------------------------------------------------+---------------+-------------+
 """
 File Adaptor (Producer) - Generic Data Product Runtime.
 
 This module implements the producer file adaptor responsible for
-discovering files from a source storage container, copying them to a
-mapper staging container, and publishing Kafka file-ready events for
-downstream processing.
+discovering files in a source storage container, copying each one
+straight to the target storage container UNDER ITS ORIGINAL NAME (no
+rename, no org prefix — see this file's v3.1.0 changelog entry), and
+publishing a Kafka notification once it lands there. There is no
+intermediate staging container or "mapper" hop any more — a data
+product's adaptor is now the entire file-pathway pipeline by itself.
 
 Unlike the per-schema-type blueprints under blueprints/producer/file/,
 this module carries no product- or schema-specific defaults: every
-identifier (product name, schema type, org, source/target locations,
-Kafka topics) is supplied entirely via environment variables at
-container start. One image serves every data product — a new data
-product is a new set of environment variables passed to this same
-image, not a new folder/Dockerfile/blueprint copy.
+identifier (product name, source/target locations, Kafka topic) is
+supplied entirely via environment variables at container start. One
+image serves every data product — a new data product is a new set of
+environment variables passed to this same image, not a new
+folder/Dockerfile/blueprint copy.
 
 The adaptor supports scheduler-driven execution models, OpenTelemetry
 observability, heartbeat monitoring, Kafka-triggered execution, and
@@ -42,7 +51,8 @@ Airflow-based orchestration.
 
 Features:
     * File discovery from cloud storage providers.
-    * File transfer between source and mapper containers.
+    * Direct file transfer from the source container to the target
+      container, unchanged filename, one copy — not two.
     * Kafka event publication for downstream processing.
     * OpenTelemetry tracing and metrics collection.
     * Structured pipeline and step-level logging.
@@ -54,9 +64,9 @@ Environment Variables:
     cloudProviderType: Cloud storage provider type.
     srcConnectionString: Source storage connection string (Azure, base64).
     srcContainerName: Source storage container name.
-    mapperConnectionString: Mapper storage connection string (Azure, base64).
-    mapperContainerName: Mapper storage container name.
-    mapperTopicName: Kafka topic for downstream notifications.
+    targetConnectionString: Target storage connection string (Azure, base64).
+    targetContainerName: Target storage container name.
+    targetTopicName: Kafka topic for downstream notifications.
     bootstrapServer: Kafka bootstrap server endpoint.
     AWS_ENDPOINT_URL: AWS/S3-compatible endpoint URL.
     AWS_ACCESS_KEY_ID: AWS/S3 access key (base64).
@@ -67,8 +77,8 @@ Environment Variables:
 
 Pipeline Flow:
     Source Container
-        --> File Adaptor
-        --> Mapper Container
+        --> File Adaptor (copy, unchanged filename)
+        --> Target Container
         --> Kafka Event
         --> Downstream Processing
 
@@ -112,7 +122,9 @@ load_dotenv()
 class AdaptorFileProcess:
     """
     File-ingestion adaptor for any registered data product.
-    Reads from srcContainerName, copies to mapperContainerName, publishes Kafka events.
+    Reads from srcContainerName and writes straight to
+    targetContainerName under the same filename — then publishes a
+    Kafka notification.
     """
 
     def __init__(self) -> None:
@@ -126,17 +138,17 @@ class AdaptorFileProcess:
         # Initialize OpenTelemetry
         self.tracer = OtelTracer.initialize(
             service_name="producer-file-adaptor",
-            service_version="2.0.0"
+            service_version="3.1.0"
         )
         self.meter = OtelMetrics.initialize(
             service_name="producer-file-adaptor",
-            service_version="2.0.0"
+            service_version="3.1.0"
         )
 
         # Create metrics
         self.files_processed = self.meter.create_counter(
             name="files_processed_total",
-            description="Total files processed by file extractor",
+            description="Total files processed by file adaptor",
             unit="1",
         )
 
@@ -159,16 +171,18 @@ class AdaptorFileProcess:
         # can inject headers as a child of that span, not the pipeline span.
         self._file_span_context: _otel_context.Context | None = None
 
+        self.file_name: str | None = None
+
         self.cloud_provider: str = os.getenv("cloudProviderType", "azure")
-        self.target_kafka_topic: str = os.getenv("mapperTopicName", "")
+        self.target_kafka_topic: str = os.getenv("targetTopicName", "")
         self.source_azure_conn_str: str = base64.b64decode(
             os.getenv("srcConnectionString", "")
         ).decode("utf-8")
         self.source_container_name: str = os.getenv("srcContainerName", "")
-        self.target_container_name: str = os.getenv("mapperContainerName", "")
+        self.target_container_name: str = os.getenv("targetContainerName", "")
         self.bootstrap_server: str = os.getenv("bootstrapServer", "")
         self.target_azure_conn_str: str = base64.b64decode(
-            os.getenv("mapperConnectionString", "")
+            os.getenv("targetConnectionString", "")
         ).decode("utf-8")
         self.aws_endpoint_url: str | None = os.getenv("AWS_ENDPOINT_URL") or None
         self.aws_access_key_id = base64.b64decode(
@@ -187,10 +201,13 @@ class AdaptorFileProcess:
 
         validate_cloud_config(
             cloud_provider=self.cloud_provider,
-            azure_fields=["srcConnectionString", "mapperConnectionString"],
+            azure_fields=["srcConnectionString", "targetConnectionString"],
             logger=self.logger,
         )
-        validate_kafka_config(logger=self.logger)
+        # No mapperTopicName any more — this adaptor absorbed its schema
+        # mapper stage entirely (see this file's v3.0.0 changelog entry),
+        # so there is no intermediate mapper topic to require.
+        validate_kafka_config(logger=self.logger, require_mapper_topic=False)
 
         self.logger.info(
             "Configuration validation successful",
@@ -226,12 +243,9 @@ class AdaptorFileProcess:
         self.data_trans.ensure_container_exists(
             self.cloud_provider, self.target_container_name, side="target"
         )
-        # Ensure the mapper topic exists before anything tries to
-        # produce/subscribe to it. A brand-new self-service product may
-        # name a topic that doesn't exist yet on the broker — without
-        # this, the schema_mapper's consumer.subscribe() fails every poll
-        # with UNKNOWN_TOPIC_OR_PART (see blueprints/producer/topic/adaptor's
-        # identical guard for the same reason on that pathway).
+        # Ensure the target topic exists before anything tries to produce to
+        # it. A brand-new self-service product may name a topic that
+        # doesn't exist yet on the broker.
         KafkaTopicManager(
             bootstrap_server=self.bootstrap_server,
             logger=self.logger,
@@ -269,9 +283,27 @@ class AdaptorFileProcess:
             )
             return source_files
 
+    def schema_validation(self, file: str) -> bool:
+        """Stub — kept from the removed schema mapper for PI3 schema-
+        validation work; always True today (see that module's history)."""
+        self.logger.info(
+            "Schema validation (stub – PI3)",
+            extra={"file": file, "component.name": self.component_name},
+        )
+        return True
+
     @traced(span_name="process_file")
     def move_files(self, file: str) -> bool:
-
+        """
+        Copy directly from source_container_name to target_container_name,
+        under the SAME name it arrived with — no rename, no org prefix, no
+        case/space/hyphen normalization. The removed schema mapper this
+        adaptor absorbed used to rewrite the name (org-prefixed,
+        spaces/hyphens to underscores); that behaviour was removed on
+        request — a business user's file must reach the target container
+        exactly as received. One hop either way: there is no mapper
+        container in between any more.
+        """
         with self.tracer.start_as_current_span("process_file") as span:
             span.set_attribute("file.name", file)
             span.set_attribute("storage.source_container", self.source_container_name)
@@ -279,12 +311,19 @@ class AdaptorFileProcess:
 
             start_time = datetime.now(UTC)
 
+            self.file_name = file
+
             try:
-                result = self.data_trans.file_copy(cloud_vendor=self.cloud_provider, file_name=file)
+                result = self.data_trans.file_copy(
+                    cloud_vendor=self.cloud_provider,
+                    file_name=file,
+                    dest_file_name=self.file_name,
+                )
                 self.logger.info(
                     "Adaptor file_copy result",
                     extra={
-                        "file": file,
+                        "source_file": file,
+                        "dest_file": self.file_name,
                         "copied": result.copied,
                         "skipped": result.skipped,
                         "reason": result.reason,
@@ -310,7 +349,8 @@ class AdaptorFileProcess:
                 span.set_attribute("process.status", "success" if result.copied else "skipped")
 
                 # Capture this span's context so send_to_kafka() below can
-                # inject it as the parent trace context for the mapper span.
+                # inject it as a child of this span rather than the coarser
+                # pipeline-level span.
                 self._file_span_context = _otel_context.get_current()
 
                 return result.copied
@@ -326,7 +366,7 @@ class AdaptorFileProcess:
                 span.record_exception(exc)
                 raise
 
-    def send_to_kafka(self, file_name: str, is_file_move: bool) -> None:
+    def send_to_kafka(self, is_file_move: bool) -> None:
         if is_file_move:
 
             message = {
@@ -334,7 +374,7 @@ class AdaptorFileProcess:
                         if self.cloud_provider.upper() == "AWS"
                         else self.cloud_provider.upper(),
                 "storageContainer": self.target_container_name,
-                "path":             file_name,
+                "path":             self.file_name,
             }
 
             # Restore the per-file "process_file" span context (captured in
@@ -353,14 +393,14 @@ class AdaptorFileProcess:
                 "Kafka message published",
                 extra={
                     "topic": self.target_kafka_topic,
-                    "file": file_name,
+                    "file": self.file_name,
                     "component.name": self.component_name,
                 },
             )
         else:
             self.logger.info(
                 "Kafka message suppressed — file not copied",
-                extra={"file": file_name, "component.name": self.component_name},
+                extra={"file": self.file_name, "component.name": self.component_name},
             )
 
 
@@ -398,9 +438,9 @@ def run(ctx: PipelineContext) -> None:
             service_name=f"producer-file-{adaptor.product_name or 'unknown'}-adaptor",
             config_summary={
                 "cloudProviderType":   adaptor.cloud_provider,
-                "mapperTopicName":     adaptor.target_kafka_topic,
+                "targetTopicName":     adaptor.target_kafka_topic,
                 "srcContainerName":    adaptor.source_container_name,
-                "mapperContainerName": adaptor.target_container_name,
+                "targetContainerName": adaptor.target_container_name,
                 "bootstrapServer":     adaptor.bootstrap_server,
                 "PRODUCT_NAME":        adaptor.product_name,
                 "SCHEDULER_BACKEND":   os.getenv("SCHEDULER_BACKEND", "standalone"),
@@ -428,14 +468,15 @@ def run(ctx: PipelineContext) -> None:
             span.set_attribute("pipeline.status", "no_files")
             return
 
-        # Step 2 — copy each file and publish Kafka events
+        # Step 2 — copy each file straight to target, unchanged, and publish
         copied_count = skipped_count = 0
 
         for file in source_files:
             step_log.step_start(ctx, "move_and_publish", extra={"file": file})
             try:
+                adaptor.schema_validation(file)
                 is_copied = adaptor.move_files(file=file)
-                adaptor.send_to_kafka(file_name=file, is_file_move=is_copied)
+                adaptor.send_to_kafka(is_file_move=is_copied)
                 if is_copied:
                     copied_count += 1
                 else:
@@ -509,6 +550,7 @@ if __name__ == "__main__":  # pragma: no cover
             metadata={
                 "kafka_topic": temp_proc.target_kafka_topic,
                 "src_container": temp_proc.source_container_name,
+                "target_container": temp_proc.target_container_name,
                 "cloud_provider": temp_proc.cloud_provider,
                 "scheduler_backend": os.getenv("SCHEDULER_BACKEND", "standalone"),
             },

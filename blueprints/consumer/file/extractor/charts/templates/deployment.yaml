@@ -42,8 +42,6 @@ spec:
             value: {{ .Values.scheduleInterval | quote }}
           - name: "cloudProviderType"
             value: {{ .Values.cloudProviderType }}
-          - name: "mapperTopicName"
-            value: {{ .Values.mapperTopicName }}
           - name: "srcConnectionString"
             valueFrom:
               secretKeyRef:
@@ -51,8 +49,6 @@ spec:
                 key: SRC_CONNECTION_STRING
           - name: "srcContainerName"
             value: {{ .Values.srcContainerName }}
-          - name: "mapperContainerName"
-            value: {{ .Values.mapperContainerName }}
           - name: "bootstrapServer"
             value: {{ .Values.bootstrapServer }}
           - name: "KAFKA_SECURITY_PROTOCOL"
@@ -68,11 +64,6 @@ spec:
                 key: KAFKA_OAUTH_CLIENT_SECRET
           - name: "KAFKA_OAUTH_TOKEN_ENDPOINT_URL"
             value: {{ .Values.KAFKA_OAUTH_TOKEN_ENDPOINT_URL }}
-          - name: "mapperConnectionString"
-            valueFrom:
-              secretKeyRef:
-                name: {{ .Values.storageConnectionSecret }}
-                key: MAPPER_CONNECTION_STRING
           - name: "targetConnectionString"
             valueFrom:
               secretKeyRef:
@@ -83,9 +74,15 @@ spec:
           - name: "targetContainerName"
             value: {{ .Values.targetContainerName }}
           - name: "AWS_ENDPOINT_URL"
-            value: {{ .Values.awsEndpointUrl }}
+            valueFrom:
+              configMapKeyRef:
+                name: {{ .Values.name }}-aws-config
+                key: AWS_ENDPOINT_URL
           - name: "AWS_REGION"
-            value: {{ .Values.awsRegion }}
+            valueFrom:
+              configMapKeyRef:
+                name: {{ .Values.name }}-aws-config
+                key: AWS_REGION
           - name: "AWS_ACCESS_KEY_ID"
             valueFrom:
               secretKeyRef:

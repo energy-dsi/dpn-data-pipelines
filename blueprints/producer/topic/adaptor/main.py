@@ -19,18 +19,27 @@
 # | 1.1.0   | Kafka Trigger and StepLogger Integration                 | DSI Team      | 2026-05-26  |
 # | 1.2.0   | OTEL Collector Integration                               | DSI Team      | 2026-06-26  |
 # | 2.0.0   | Genericised — one image for every schema type/product    | DSI Team      | 2026-08-30  |
+# | 3.0.0   | Schema mapper absorbed into adaptor — no mapper topic;   | DSI Team      | 2026-09-14  |
+# |         | adaptor enriches and produces straight to the target     |               |             |
+# |         | topic in one hop.                                        |               |             |
+# | 3.1.0   | targetTopicName now a real user-provided override (not  | DSI Team      | 2026-09-14  |
+# |         | always self-computed) — see self-service review screen.  |               |             |
 # +---------+----------------------------------------------------------+---------------+-------------+
 
 """
 Kafka Topic Adaptor (Producer) - Generic Data Product Runtime.
 
 This module implements the producer adaptor responsible for consuming
-messages from a source Kafka topic and forwarding them to a downstream
-mapper topic for transformation processing.
+messages from a source Kafka topic, enriching them with the same
+standardized metadata the removed schema mapper always added, and
+producing them straight to the target Kafka topic. There is no
+intermediate "mapper"/RAW topic or separate mapper process any more — a
+data product's adaptor is now the entire topic-pathway pipeline by
+itself.
 
 Unlike the per-schema-type blueprints under blueprints/producer/topic/,
 this module carries no product- or schema-specific defaults: every
-identifier (product name, source/mapper topic, group id) is supplied
+identifier (product name, source topic, group id, org) is supplied
 entirely via environment variables at container start. One image serves
 every data product.
 
@@ -41,12 +50,22 @@ interval-based processing patterns.
 Environment Variables:
     bootstrapServer: Kafka bootstrap server endpoint.
     srcTopicName: Source Kafka topic name — required, no default.
-    mapperTopicName: Mapper topic name (defaults to srcTopicName + "-trfm" if unset).
     srcGroupId: Kafka consumer group identifier.
+    orgName: Organization identifier — used to compute the target topic
+        name and stamped onto every message's headers.
+    productType: Product identifier — used to compute the target topic
+        name and stamped onto every message's headers.
+    targetTopicName: Destination Kafka topic — a real user override from
+        the self-service review screen; falls back to
+        dpn-producer-<org>-<product>-target (computed from orgName/
+        productType above) only when left unset entirely.
     consumerRetryDelaySecs: Consumer retry interval.
     PRODUCT_NAME: Data product identifier — required, no default.
     SCHEDULER_BACKEND: Execution backend configuration.
     TOPIC_TASK_TIMEOUT_SECS: Processing window timeout.
+
+Pipeline Flow:
+    Source Topic --> Adaptor (enrich) --> Target Topic
 
 File Location:
     blueprints/producer/topic/adaptor/main.py
@@ -55,16 +74,17 @@ File Location:
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 from datetime import UTC, datetime
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
-from opentelemetry import context as _otel_context, propagate as _otel_propagate
+from opentelemetry import propagate as _otel_propagate
 from dotenv import load_dotenv
 
 from utils.kafka_security import build_kafka_client_config
-from utils.topic_utils import TopicResolver, KafkaTopicManager
+from utils.topic_utils import KafkaTopicManager
 from utils.pipeline_context import PipelineContext
 from utils.scheduler_backend import get_backend, run_once
 from utils.step_logger import StepLogger
@@ -82,19 +102,36 @@ load_dotenv()
 _TIMEOUT = int(os.getenv("TOPIC_TASK_TIMEOUT_SECS", "600"))
 
 
+def _sanitize(value: str | None, default: str = "unknown") -> str:
+    """
+    Normalize input string for Kafka-safe topic naming — identical to the
+    removed schema mapper's own `_sanitize()`, preserved verbatim so the
+    target topic name this adaptor computes is exactly what it always was.
+
+    Rules:
+    - Removes non-alphanumeric characters
+    - Converts to lowercase
+    - Falls back to 'unknown' if empty or None
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", value or default).lower()
+    return cleaned or default
+
+
 class TopicForwarder:
     """
-    Kafka Topic Forwarder.
+    Kafka Topic Forwarder for any registered data product.
 
     Responsible for:
-    - Subscribing to a source Kafka topic
-    - Forwarding messages to a mapper topic
+    - Subscribing to the source Kafka topic
+    - Enriching each message with metadata headers (org/product/timestamp/
+      offset — exactly what the removed schema mapper always added)
+    - Producing straight to the target Kafka topic
     - Handling retries, logging, and delivery status
 
     Attributes:
         bootstrap (str): Kafka bootstrap server
         src_topic (str): Source Kafka topic
-        mapper_topic (str): Destination (mapper) topic
+        target_topic (str): Destination topic — dpn-producer-<org>-<product>-target
         group_id (str): Consumer group ID
         retry_delay (int): Delay between retries (seconds)
     """
@@ -111,11 +148,11 @@ class TopicForwarder:
         # Initialize OpenTelemetry
         self.tracer = OtelTracer.initialize(
             service_name="producer-topic-adaptor",
-            service_version="2.0.0"
+            service_version="3.0.0"
         )
         self.meter = OtelMetrics.initialize(
             service_name="producer-topic-adaptor",
-            service_version="2.0.0"
+            service_version="3.0.0"
         )
 
         # Create metrics
@@ -146,13 +183,21 @@ class TopicForwarder:
         self.group_id = os.getenv("srcGroupId", self.component_name)
         self.retry_delay = int(os.getenv("consumerRetryDelaySecs", "5"))
 
-        # Resolve mapper topic dynamically
-        topic_resolver = TopicResolver()
-        self.mapper_topic = topic_resolver.resolve(
-            os.getenv("mapperTopicName"),
-            self.src_topic,
-            "trfm",
-        )
+        # Metadata (ENV-driven, supports fallback) — absorbed from the
+        # removed schema mapper, which used these to compute the target
+        # topic name and to stamp every message's headers.
+        self.org_name = _sanitize(os.getenv("orgName"))
+        self.product_type = _sanitize(os.getenv("productType"))
+
+        # Target topic: a real, user-provided value from the self-service
+        # review screen (targetTopicName) — not silently recomputed here
+        # every time. Falls back to the same dpn-producer-<org>-<product>-
+        # target formula the removed schema mapper always used only when
+        # nothing was ever supplied at all (e.g. a manual chart deploy
+        # outside the self-service UI, or the field left blank) — see
+        # service/models.py's default_topic_names().
+        fallback_target_topic_name = f"dpn-producer-{self.org_name}-{self.product_type}-target"
+        self.target_topic = os.getenv("targetTopicName", "").strip() or fallback_target_topic_name
 
         # Ensure source and target topics exist. The source topic is
         # normally owned by an upstream system, but a brand-new self-service
@@ -164,7 +209,7 @@ class TopicForwarder:
             logger=self.logger,
         )
         topic_manager.ensure_exists(self.src_topic)
-        topic_manager.ensure_exists(self.mapper_topic)
+        topic_manager.ensure_exists(self.target_topic)
 
         # Initialize Kafka producer
         self.producer = Producer(build_kafka_client_config(self.bootstrap))
@@ -174,7 +219,7 @@ class TopicForwarder:
             "Adaptor initialised",
             extra={
                 "srcTopicName": self.src_topic,
-                "mapperTopicName": self.mapper_topic,
+                "targetTopicName": self.target_topic,
                 **({"component.name": self.component_name} if self.component_name else {}),
             },
         )
@@ -192,13 +237,17 @@ class TopicForwarder:
 
     @traced(span_name="forward_message")
     def _forward(self, msg, ctx: PipelineContext, step_log: StepLogger) -> None:
-        """Forward a single Kafka message to mapper topic."""
+        """
+        Enrich and produce a single Kafka message straight to the target
+        topic — one hop, not two: there is no mapper topic in between any
+        more.
+        """
         with self.tracer.start_as_current_span("forward_message") as span:
             operation = "forward"
             start_time = datetime.now(UTC)
 
             span.set_attribute("kafka.source_topic", msg.topic())
-            span.set_attribute("kafka.destination_topic", self.mapper_topic)
+            span.set_attribute("kafka.destination_topic", self.target_topic)
             span.set_attribute("kafka.partition", msg.partition())
             span.set_attribute("kafka.offset", msg.offset())
             span.set_attribute("message.key", str(msg.key()) if msg.key() else "null")
@@ -213,19 +262,29 @@ class TopicForwarder:
             )
 
             try:
-                # schema_mapper pod can restore the same trace_id.
+                # Trace context, for any external consumer of the target
+                # topic that wants to correlate — same propagation the
+                # removed schema mapper's own downstream relied on.
                 carrier: dict[str, str] = {}
                 _otel_propagate.inject(carrier)
-                outgoing_headers = list(msg.headers() or []) + [
+
+                # Metadata headers — identical to what the removed schema
+                # mapper always stamped onto every message it forwarded.
+                enriched_headers = list(msg.headers() or []) + [
+                    ("orgName", self.org_name.encode()),
+                    ("productType", self.product_type.encode()),
+                    ("processedAt", datetime.now(UTC).isoformat().encode()),
+                    ("offset", str(msg.offset())),
+                ] + [
                     (k, v.encode() if isinstance(v, str) else v)
                     for k, v in carrier.items()
                 ]
-                # Produce message to mapper topic
+
                 self.producer.produce(
-                    topic=self.mapper_topic,
+                    topic=self.target_topic,
                     value=msg.value(),
                     key=msg.key(),
-                    headers=outgoing_headers,
+                    headers=enriched_headers,
                     callback=self._on_delivery,
                 )
 
@@ -240,13 +299,13 @@ class TopicForwarder:
                 # Record metrics
                 self.messages_forwarded.add(1, {
                     "source_topic": msg.topic(),
-                    "destination_topic": self.mapper_topic,
+                    "destination_topic": self.target_topic,
                     "status": "success"
                 })
 
                 self.forward_duration.record(duration_ms, {
                     "source_topic": msg.topic(),
-                    "destination_topic": self.mapper_topic
+                    "destination_topic": self.target_topic
                 })
 
                 span.set_attribute("forward.status", "success")
@@ -256,7 +315,7 @@ class TopicForwarder:
                     ctx,
                     operation,
                     extra={
-                        "dst": self.mapper_topic,
+                        "dst": self.target_topic,
                         "duration_ms": duration_ms,
                     },
                 )
@@ -265,7 +324,7 @@ class TopicForwarder:
                 # Record error metrics
                 self.messages_forwarded.add(1, {
                     "source_topic": msg.topic(),
-                    "destination_topic": self.mapper_topic,
+                    "destination_topic": self.target_topic,
                     "status": "error"
                 })
 
@@ -288,7 +347,7 @@ class TopicForwarder:
 
         with self.tracer.start_as_current_span("consumer_window") as span:
             span.set_attribute("kafka.source_topic", self.src_topic)
-            span.set_attribute("kafka.mapper_topic", self.mapper_topic)
+            span.set_attribute("kafka.target_topic", self.target_topic)
             span.set_attribute("kafka.group_id", self.group_id)
             span.set_attribute("window.timeout_seconds", stop_after or 0)
 
@@ -334,7 +393,7 @@ class TopicForwarder:
 
                         messages_processed += 1
 
-                        # Forward message
+                        # Enrich and forward message straight to target
                         self._forward(msg, ctx, step_log)
 
                 except KafkaException as exc:
@@ -391,7 +450,7 @@ def run(ctx: PipelineContext) -> None:
             service_name=f"producer-topic-{forwarder.product_name or 'unknown'}-adaptor",
             config_summary={
                 "srcTopicName": forwarder.src_topic,
-                "mapperTopicName": forwarder.mapper_topic,
+                "targetTopicName": forwarder.target_topic,
                 "SCHEDULER_BACKEND": os.getenv("SCHEDULER_BACKEND", "standalone"),
                 "PRODUCT_NAME": forwarder.product_name,
             },
@@ -450,7 +509,7 @@ if __name__ == "__main__":
             component_name=component_name,
             metadata={
                 "source_topic": temp_forwarder.src_topic,
-                "mapper_topic": temp_forwarder.mapper_topic,
+                "target_topic": temp_forwarder.target_topic,
                 "scheduler_backend": os.getenv("SCHEDULER_BACKEND", "standalone"),
             },
         )

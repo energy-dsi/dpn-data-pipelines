@@ -60,14 +60,14 @@ spec:
               value: {{ .Values.srcTopicName | quote }}
             - name: "srcGroupId"
               value: {{ .Values.srcGroupId | quote }}
-            - name: "mapperTopicName"
-              value: {{ .Values.mapperTopicName | quote }}
             - name: "consumerRetryDelaySecs"
               value: {{ .Values.consumerRetryDelaySecs | quote }}
             - name: "TOPIC_TASK_TIMEOUT_SECS"
               value: {{ .Values.TOPIC_TASK_TIMEOUT_SECS | quote }}
             - name: "orgName"
               value: {{ .Values.orgName | quote }}
+            - name: "productType"
+              value: {{ .Values.productType | quote }}
             - name: "SCHEDULER_BACKEND"
               value: {{ .Values.SCHEDULER_BACKEND | quote }}
             - name: "EXECUTION_MODE"

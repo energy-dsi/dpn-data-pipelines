@@ -10,12 +10,21 @@ bootstrapServer: dpn-kafka-target:9092 # Kafka broker endpoint (local setup)
 KAFKA_SECURITY_PROTOCOL: SASL_SSL # SASL authentication over TLS (set to SSL or PLAINTEXT to opt out)
 KAFKA_SASL_MECHANISM: OAUTHBEARER # OAuth2 client-credentials via Keycloak
 KAFKA_OAUTH_CLIENT_ID: dpn-service-client # Keycloak service-account client
-KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
+# Points at dpn-keycloak-service-lb, not the plain dpn-keycloak ClusterIP
+# Service — matching dpn-authentication-service's own convention, where
+# the real Keycloak is only ever exposed as a LoadBalancer Service of this
+# exact name (see local/minikube/keycloak.yaml's matching comment). A
+# LoadBalancer Service still gets its own in-cluster DNS name, so this
+# resolves fine for this server-to-server call too, not just from a browser.
+KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak-service-lb.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
 kafkaTlsSecretName: dpn-tls
 kafkaOauthSecretName: kafka-secrets
 
-mapperTopicName: dp-consumer-topic-trfm # Topic for transformed/mapper data
-srcTopicName: dp-consumer-topic-stage # Source topic consumed by adaptor
+# No mapper topic any more — this container absorbed the old schema_mapper
+# entirely (see main.py's v2.0.0 changelog): each message's own target
+# topic is resolved dynamically from its producer-stamped headers and
+# produced to straight from here, no dp-consumer-topic-trfm relay.
+srcTopicName: dp-consumer-topic-stage # Source topic consumed by extractor
 srcGroupId: consumer-topic-extractor # Consumer group ID
 
 # ============================================================
@@ -34,7 +43,11 @@ OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.loc
 OTEL_EXPORTER_OTLP_INSECURE: false
 
 SCHEDULER_BACKEND: kafka-trigger # Execution backend (kafka-trigger recommended)
-EXECUTION_MODE: manual # manual = disabled automatic execution
+# Automatic only — both consumer pipelines are, on request; there is no
+# manual/"Run Now" mode any more (that UI/route was removed entirely, not
+# just disabled — see service/consumers.py, ui/app.py, and
+# ui/templates/consumers.html).
+EXECUTION_MODE: automatic
 
 scheduleInterval: 240 # Execution interval (seconds, only for interval mode)
 replicaCount: 1 # Number of pod replicas

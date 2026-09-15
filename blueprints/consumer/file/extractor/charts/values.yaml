@@ -1,5 +1,5 @@
 namespace: ns-dpn-01
-name: consumer-file-extractor
+name: dpn-consumer-file-extractor
 cloudProviderType: azure
 acrName: ""
 imageName: consumer-file-extractor
@@ -13,26 +13,46 @@ bootstrapServer: dpn-kafka-target:9092
 KAFKA_SECURITY_PROTOCOL: SASL_SSL # SASL authentication over TLS (set to SSL or PLAINTEXT to opt out)
 KAFKA_SASL_MECHANISM: OAUTHBEARER # OAuth2 client-credentials via Keycloak
 KAFKA_OAUTH_CLIENT_ID: dpn-service-client # Keycloak service-account client
-KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
+# Points at dpn-keycloak-service-lb, not the plain dpn-keycloak ClusterIP
+# Service — matching dpn-authentication-service's own convention, where
+# the real Keycloak is only ever exposed as a LoadBalancer Service of this
+# exact name (see local/minikube/keycloak.yaml's matching comment). A
+# LoadBalancer Service still gets its own in-cluster DNS name, so this
+# resolves fine for this server-to-server call too, not just from a browser.
+KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak-service-lb.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
 kafkaTlsSecretName: dpn-tls
 kafkaOauthSecretName: kafka-secrets
 
+# No staging container/mapper topic any more — this container absorbed
+# the old schema_mapper entirely (see main.py's v2.0.0 changelog): files
+# move srcContainerName -> targetContainerName directly, one Kafka event
+# per file published straight to targetTopicName.
 srcContainerName: dp-consumer-stage
 storageConnectionSecret: consumer-file-dp-secret
-mapperTopicName: dp-consumer-file-trfm
-mapperContainerName: dp-consumer-trfm
 targetTopicName: dp-consumer-file-target
 targetContainerName: dp-consumer-target
+imageRegistry: ghcr.io/energy-dsi
 scheduleInterval: 60 # schedule interval in seconds
 
 # ------- AWS Config ------------
+# Values that vary by environment (region, MinIO/S3 endpoint) come from a
+# ConfigMap (templates/configmap.yaml), not baked directly into the
+# Deployment's env as literals — so ops can `kubectl edit configmap
+# <name>-aws-config` + restart the pod to change them without a helm
+# upgrade. awsEndpointUrl/awsRegion below are what populates that
+# ConfigMap at install time; override them per environment the same way
+# as any other value here.
 awsEndpointUrl: "<<your specific value>>"
-awsRegion: us-east-1
+awsRegion: eu-west-2
 awsAccessSecret: aws-access-secret
 
 # Scheduler / Execution
 SCHEDULER_BACKEND: kafka-trigger
-EXECUTION_MODE: manual
+# Automatic only — both consumer pipelines are, on request; there is no
+# manual/"Run Now" mode any more (that UI/route was removed entirely, not
+# just disabled — see service/consumers.py, ui/app.py, and
+# ui/templates/consumers.html).
+EXECUTION_MODE: automatic
 replicaCount: 1
 
 # Pipeline Control Topics
