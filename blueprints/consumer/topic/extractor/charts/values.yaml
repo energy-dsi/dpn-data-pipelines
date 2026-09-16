@@ -1,7 +1,7 @@
 # ============================================================
 # Kafka Configuration (Source Cluster)
 # ============================================================
-bootstrapServer: dpn-kafka-target.ns-dpn-01.svc.cluster.local # Kafka broker endpoint (local setup)
+bootstrapServer: dpn-kafka-target.ns-dpn-01.svc.cluster.local:9094 # Kafka broker endpoint (local setup)
 # ============================================================
 # Kafka Security (SASL/TLS — SASL_SSL + SASL_OAUTHBEARER/Keycloak)
 # build_kafka_client_config() reads these KAFKA_*/KAFKA_OAUTH_* vars.

@@ -4,7 +4,7 @@ cloudProviderType: azure
 acrName: ""
 imageName: consumer-file-extractor
 imageTag: ""
-bootstrapServer: dpn-kafka-target.ns-dpn-01.svc.cluster.local
+bootstrapServer: dpn-kafka-target.ns-dpn-01.svc.cluster.local:9094
 # ============================================================
 # Kafka Security (SASL/TLS — SASL_SSL + SASL_OAUTHBEARER/Keycloak)
 # build_kafka_client_config() reads these KAFKA_*/KAFKA_OAUTH_* vars.
