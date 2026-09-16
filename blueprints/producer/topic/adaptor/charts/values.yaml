@@ -8,7 +8,7 @@ acrName: ""
 imageName: dpn-producer-topic-adaptor-generic
 imageTag: latest
 
-bootstrapServer: dpn-kafka.ns-dpn-01.svc.cluster.local:9092
+bootstrapServer: dpn-kafka-src.ns-dpn-01.svc.cluster.local:9094
 KAFKA_SECURITY_PROTOCOL: SASL_SSL
 KAFKA_SASL_MECHANISM: OAUTHBEARER
 KAFKA_OAUTH_CLIENT_ID: dpn-service-client
