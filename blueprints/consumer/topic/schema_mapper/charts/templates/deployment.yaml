@@ -122,8 +122,8 @@ spec:
           - name: "TRUSTSTORE_PASSWORD"
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.kafkaOauthSecretName | default "kafka-secrets" }}
-                key: UNIVERSAL_DPN_CERT_PASSWORD
+                name: tls-auth-secret
+                key: TRUSTSTORE_PASSWORD
           
           - name: "ENVIRONMENT"
             value: {{ .Values.ENVIRONMENT }}
