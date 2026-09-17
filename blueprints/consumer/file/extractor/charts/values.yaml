@@ -21,7 +21,7 @@ KAFKA_OAUTH_CLIENT_ID: dpn-service-client # Keycloak service-account client
 # resolves fine for this server-to-server call too, not just from a browser.
 KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak-service-lb.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
 kafkaTlsSecretName: dpn-tls
-kafkaOauthSecretName: kafka-secrets
+kafkaOauthSecretName: dpn-keycloak-secrets
 
 # No staging container/mapper topic any more — this container absorbed
 # the old schema_mapper entirely (see main.py's v2.0.0 changelog): files

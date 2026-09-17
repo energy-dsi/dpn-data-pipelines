@@ -25,7 +25,7 @@ KAFKA_OAUTH_CLIENT_ID: dpn-service-client
 KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak-service-lb.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
 
 kafkaTlsSecretName: dpn-tls
-kafkaOauthSecretName: kafka-secrets
+kafkaOauthSecretName: dpn-keycloak-secrets
 
 productType: example-product
 PRODUCT_NAME: example-product

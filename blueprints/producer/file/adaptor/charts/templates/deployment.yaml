@@ -74,8 +74,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.kafkaOauthSecretName | default "kafka-secrets" }}
-                  key: KAFKA_OAUTH_CLIENT_SECRET
-                  optional: true
+                  key: KC_SERVICE_CLIENT_SECRET
             - name: "KAFKA_OAUTH_TOKEN_ENDPOINT_URL"
               value: {{ .Values.KAFKA_OAUTH_TOKEN_ENDPOINT_URL | quote }}
             - name: "KAFKA_SSL_CA_LOCATION"
@@ -83,8 +82,8 @@ spec:
             - name: "TRUSTSTORE_PASSWORD"
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.kafkaOauthSecretName | default "kafka-secrets" }}
-                  key: UNIVERSAL_DPN_CERT_PASSWORD
+                  name: kafka-secrets
+                  key: KC_HTTPS_TRUST_STORE_PASSWORD
             - name: "productType"
               value: {{ .Values.productType | quote }}
             - name: "PRODUCT_NAME"
