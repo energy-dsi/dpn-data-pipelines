@@ -92,7 +92,8 @@ spec:
               value: {{ .Values.ENVIRONMENT | quote }}
           volumeMounts:
             - name: dpn-tls
-              mountPath: /etc/kafka/secrets
+              mountPath: /etc/secrets/truststore.jks
+              subPath: truststore.jks
               readOnly: true
       volumes:
         - name: dpn-tls
