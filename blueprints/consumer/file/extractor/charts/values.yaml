@@ -13,13 +13,13 @@ bootstrapServer: dpn-kafka-target.ns-dpn-01.svc.cluster.local:9092
 KAFKA_SECURITY_PROTOCOL: SASL_SSL # SASL authentication over TLS (set to SSL or PLAINTEXT to opt out)
 KAFKA_SASL_MECHANISM: OAUTHBEARER # OAuth2 client-credentials via Keycloak
 KAFKA_OAUTH_CLIENT_ID: dpn-service-client # Keycloak service-account client
-# Points at dpn-keycloak-service-lb, not the plain dpn-keycloak ClusterIP
-# Service — matching dpn-authentication-service's own convention, where
-# the real Keycloak is only ever exposed as a LoadBalancer Service of this
-# exact name (see local/minikube/keycloak.yaml's matching comment). A
-# LoadBalancer Service still gets its own in-cluster DNS name, so this
-# resolves fine for this server-to-server call too, not just from a browser.
-KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak-service-lb.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
+# Must be the plain dpn-keycloak ClusterIP Service, not dpn-keycloak-service-lb:
+# Keycloak stamps the token's `iss` claim from whichever hostname the client
+# used to reach it, and the Kafka broker's OAuth validator is configured to
+# expect issuer https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/
+# dpn-realm — fetching via the LB hostname instead produces a token the
+# broker rejects with SASL invalid_token (confirmed against a running broker).
+KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
 kafkaTlsSecretName: dpn-tls
 kafkaOauthSecretName: dpn-keycloak-secrets
 
