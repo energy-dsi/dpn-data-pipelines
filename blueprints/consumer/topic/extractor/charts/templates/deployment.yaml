@@ -48,7 +48,7 @@ spec:
           - name: "KAFKA_OAUTH_CLIENT_SECRET"
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.kafkaOauthSecretName | default "kafka-secrets" }}
+                name: {{ .Values.kafkaOauthSecretName | default "dpn-keycloak-secrets" }}
                 key: KC_SERVICE_CLIENT_SECRET
           - name: "KAFKA_OAUTH_TOKEN_ENDPOINT_URL"
             value: {{ .Values.KAFKA_OAUTH_TOKEN_ENDPOINT_URL }}
@@ -119,8 +119,13 @@ spec:
           - name: "TRUSTSTORE_PASSWORD"
             valueFrom:
               secretKeyRef:
-                name: kafka-secrets
+                name: {{ .Values.kafkaOauthSecretName | default "dpn-keycloak-secrets" }}
                 key: KC_HTTPS_TRUST_STORE_PASSWORD
+          - name: "KEYSTORE_PASSWORD"
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.kafkaOauthSecretName | default "dpn-keycloak-secrets" }}
+                key: KC_HTTPS_KEY_STORE_PASSWORD
           
           - name: "ENVIRONMENT"
             value: {{ .Values.ENVIRONMENT }}
@@ -129,6 +134,10 @@ spec:
             - name: dpn-tls
               mountPath: /etc/secrets/truststore.jks
               subPath: truststore.jks
+              readOnly: true
+            - name: dpn-tls
+              mountPath: /etc/secrets/keystore.jks
+              subPath: keystore.jks
               readOnly: true
 
       volumes:
