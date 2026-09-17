@@ -80,6 +80,11 @@ spec:
               value: {{ .Values.KAFKA_OAUTH_TOKEN_ENDPOINT_URL | quote }}
             - name: "KAFKA_SSL_CA_LOCATION"
               value: {{ .Values.KAFKA_SSL_CA_LOCATION | quote }}
+            - name: "TRUSTSTORE_PASSWORD"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.kafkaOauthSecretName | default "kafka-secrets" }}
+                  key: UNIVERSAL_DPN_CERT_PASSWORD
             - name: "productType"
               value: {{ .Values.productType | quote }}
             - name: "PRODUCT_NAME"
