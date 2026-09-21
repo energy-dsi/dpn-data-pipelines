@@ -48,10 +48,9 @@ awsAccessSecret: aws-access-secret
 
 # Scheduler / Execution
 SCHEDULER_BACKEND: kafka-trigger
-# Automatic only — both consumer pipelines are, on request; there is no
-# manual/"Run Now" mode any more (that UI/route was removed entirely, not
-# just disabled — see service/consumers.py, ui/app.py, and
-# ui/templates/consumers.html).
+# Starting default only — the self-service UI's Pause/Resume toggle (see
+# service/consumers.py) patches this Deployment's actual EXECUTION_MODE
+# in place at runtime, independent of this chart value.
 EXECUTION_MODE: automatic
 replicaCount: 1
 

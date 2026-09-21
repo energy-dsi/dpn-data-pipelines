@@ -43,10 +43,9 @@ OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.loc
 OTEL_EXPORTER_OTLP_INSECURE: false
 
 SCHEDULER_BACKEND: kafka-trigger # Execution backend (kafka-trigger recommended)
-# Automatic only — both consumer pipelines are, on request; there is no
-# manual/"Run Now" mode any more (that UI/route was removed entirely, not
-# just disabled — see service/consumers.py, ui/app.py, and
-# ui/templates/consumers.html).
+# Starting default only — the self-service UI's Pause/Resume toggle (see
+# service/consumers.py) patches this Deployment's actual EXECUTION_MODE
+# in place at runtime, independent of this chart value.
 EXECUTION_MODE: automatic
 
 scheduleInterval: 240 # Execution interval (seconds, only for interval mode)
