@@ -5,12 +5,12 @@
 #     -f blueprints/consumer/file/extractor/charts/values-local-dpn01.yaml \
 #     -n ns-dpn-dp-01 --create-namespace
 
-# This chart's image template ("{{ .Values.imageRegistry }}/{{ .Values.imageName }}:{{ .Values.imageTag }}",
-# see templates/deployment.yaml) has no default at all, so imageRegistry
-# needs a real (if fictitious, for minikube) value — an empty string
-# would render a leading "/" with nothing before it.
+# This chart's image template is "{{ .Values.acrName }}.azurecr.io/dsi/..."
+# (see templates/deployment.yaml) — acrName defaults to "" in values.yaml,
+# so it needs a real (if fictitious, for minikube) value here, matching
+# the image built in Step 2 of docs/MINIKUBE_DEPLOYMENT.md.
 namespace: ns-dpn-dp-01
-imageRegistry: <<CONTAINER_REGISTRY_URL>>/dsi
+acrName: local
 imageTag: local
 # minikube's own Docker daemon has the image cached under this exact
 # tag (Step 2) - Always (this chart's hardcoded prior default) would try
