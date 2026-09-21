@@ -132,12 +132,15 @@ spec:
           
           - name: "OTEL_EXPORTER_OTLP_INSECURE"
             value: {{ .Values.OTEL_EXPORTER_OTLP_INSECURE | quote }}
-          
+
+          - name: "OTEL_OAUTH_DISABLED"
+            value: {{ .Values.OTEL_OAUTH_DISABLED | quote }}
+
           - name: "TRUSTSTORE_PASSWORD"
             valueFrom:
               secretKeyRef:
-                name: kafka-secrets
-                key: KC_HTTPS_TRUST_STORE_PASSWORD
+                name: tls-auth-secret
+                key: TRUSTSTORE_PASSWORD
           
           - name: "ENVIRONMENT"
             value: {{ .Values.ENVIRONMENT }}

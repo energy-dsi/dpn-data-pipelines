@@ -58,8 +58,8 @@ spec:
             - name: "TRUSTSTORE_PASSWORD"
               valueFrom:
                 secretKeyRef:
-                  name: kafka-secrets
-                  key: KC_HTTPS_TRUST_STORE_PASSWORD
+                  name: tls-auth-secret
+                  key: TRUSTSTORE_PASSWORD
             - name: "srcTopicName"
               value: {{ .Values.srcTopicName | quote }}
             - name: "srcGroupId"
@@ -84,10 +84,10 @@ spec:
               value: {{ .Values.STATSD_PORT | quote }}
             - name: "OTEL_EXPORTER_OTLP_ENDPOINT"
               value: {{ .Values.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
-            - name: "OTEL_EXPORTER_OTLP_PROTOCOL"
-              value: {{ .Values.OTEL_EXPORTER_OTLP_PROTOCOL | quote }}
             - name: "OTEL_EXPORTER_OTLP_INSECURE"
               value: {{ .Values.OTEL_EXPORTER_OTLP_INSECURE | quote }}
+            - name: "OTEL_OAUTH_DISABLED"
+              value: {{ .Values.OTEL_OAUTH_DISABLED | quote }}
             - name: "SERVICE_NAME"
               value: {{ .Values.SERVICE_NAME | quote }}
             - name: "SERVICE_VERSION"
