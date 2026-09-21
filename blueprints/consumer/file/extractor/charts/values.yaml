@@ -72,5 +72,6 @@ PRODUCT_NAME: consumer-file
 
 OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4318
 OTEL_EXPORTER_OTLP_INSECURE: false
+OTEL_OAUTH_DISABLED: false  # set true to skip OAuth in dev/test
 
 ENVIRONMENT: development

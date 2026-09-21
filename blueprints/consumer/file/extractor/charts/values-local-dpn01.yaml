@@ -49,5 +49,6 @@ awsAccessSecret: aws-access-secret
 # local-dpn01.yaml's matching comment.
 OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-dp-01.svc.cluster.local:4318
 OTEL_EXPORTER_OTLP_INSECURE: true
+OTEL_OAUTH_DISABLED: true  # no Keycloak/oidc_auth locally (KAFKA_SASL_MECHANISM is empty above)
 
 ENVIRONMENT: local
