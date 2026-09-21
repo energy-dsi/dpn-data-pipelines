@@ -31,7 +31,6 @@ srcContainerName: dp-consumer-stage
 storageConnectionSecret: consumer-file-dp-secret
 targetTopicName: dp-consumer-file-target
 targetContainerName: dp-consumer-target
-imageRegistry: ghcr.io/energy-dsi
 scheduleInterval: 60 # schedule interval in seconds
 
 # ------- AWS Config ------------
