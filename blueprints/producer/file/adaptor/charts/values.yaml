@@ -59,9 +59,9 @@ STATSD_PORT: 8125
 SERVICE_NAME: dpn data pipeline
 SERVICE_VERSION: 1.0.0
 
-OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4317
-OTEL_EXPORTER_OTLP_PROTOCOL: grpc
-OTEL_EXPORTER_OTLP_INSECURE: true
+OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4318
+OTEL_EXPORTER_OTLP_INSECURE: false
+OTEL_OAUTH_DISABLED: false  # set true to skip OAuth in dev/test
 ENVIRONMENT: production
 
 # HPA is disabled by default: SCHEDULER_BACKEND=interval means each replica
