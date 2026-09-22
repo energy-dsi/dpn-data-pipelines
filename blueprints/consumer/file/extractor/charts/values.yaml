@@ -73,4 +73,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.loc
 OTEL_EXPORTER_OTLP_INSECURE: false
 OTEL_OAUTH_DISABLED: false  # set true to skip OAuth in dev/test
 
+# dpn_observability_sdk.heartbeat.HeartbeatLogger's own 5-minute default.
+HEARTBEAT_INTERVAL_SECONDS: 60
+
 ENVIRONMENT: development

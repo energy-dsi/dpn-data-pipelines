@@ -89,6 +89,7 @@ from __future__ import annotations
 
 import base64
 import os
+import signal
 import sys
 from datetime import UTC, datetime
 
@@ -556,6 +557,17 @@ if __name__ == "__main__":  # pragma: no cover
             },
         )
         heartbeat.start()
+
+        # Deployment deletion/rolling-update sends SIGTERM before the pod is
+        # killed — catching it emits the SDK's own "heartbeat.stopped" event
+        # (see dpn_observability_sdk.heartbeat.HeartbeatLogger.stop) within
+        # the grace period, so this product's last-known-alive signal is
+        # followed by an explicit stop rather than just silence.
+        def _handle_sigterm(signum, frame):
+            heartbeat.stop()
+            sys.exit(0)
+
+        signal.signal(signal.SIGTERM, _handle_sigterm)
 
         _backend = get_backend()
         _backend.execute(

@@ -135,6 +135,9 @@ spec:
           - name: "OTEL_OAUTH_DISABLED"
             value: {{ .Values.OTEL_OAUTH_DISABLED | quote }}
 
+          - name: "HEARTBEAT_INTERVAL_SECONDS"
+            value: {{ .Values.HEARTBEAT_INTERVAL_SECONDS | quote }}
+
           - name: "TRUSTSTORE_PASSWORD"
             valueFrom:
               secretKeyRef:
