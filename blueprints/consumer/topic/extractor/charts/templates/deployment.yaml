@@ -125,13 +125,13 @@ spec:
           - name: "TRUSTSTORE_PASSWORD"
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.kafkaOauthSecretName | default "dpn-keycloak-secrets" }}
-                key: KC_HTTPS_TRUST_STORE_PASSWORD
+                name: {{ .Values.tlsAuthSecretName | default "tls-auth-secret" }}
+                key: TRUSTSTORE_PASSWORD
           - name: "KEYSTORE_PASSWORD"
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.kafkaOauthSecretName | default "dpn-keycloak-secrets" }}
-                key: KC_HTTPS_KEY_STORE_PASSWORD
+                name: {{ .Values.tlsAuthSecretName | default "tls-auth-secret" }}
+                key: KEYSTORE_PASSWORD
           
           - name: "ENVIRONMENT"
             value: {{ .Values.ENVIRONMENT }}
