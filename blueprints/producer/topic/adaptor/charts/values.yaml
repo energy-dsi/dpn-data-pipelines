@@ -16,6 +16,10 @@ KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local
 
 kafkaTlsSecretName: dpn-tls
 kafkaOauthSecretName: dpn-keycloak-secrets
+# TRUSTSTORE_PASSWORD/KEYSTORE_PASSWORD for dpn-tls's truststore.jks/
+# keystore.jks — a separate secret from kafkaOauthSecretName above (which
+# still holds KC_SERVICE_CLIENT_SECRET, the Kafka OAuth client secret).
+tlsAuthSecretName: tls-auth-secret
 
 PRODUCT_NAME: example-product
 orgName: example-org
