@@ -46,6 +46,7 @@ spec:
               secretKeyRef:
                 name: {{ .Values.storageConnectionSecret }}
                 key: SRC_CONNECTION_STRING
+                optional: true
           - name: "srcContainerName"
             value: {{ .Values.srcContainerName }}
           - name: "bootstrapServer"
@@ -68,6 +69,7 @@ spec:
               secretKeyRef:
                 name: {{ .Values.storageConnectionSecret }}
                 key: TARGET_CONNECTION_STRING
+                optional: true
           - name: "targetTopicName"
             value: {{ .Values.targetTopicName }}
           - name: "targetContainerName"
@@ -87,11 +89,13 @@ spec:
               secretKeyRef:
                 name: {{ .Values.awsAccessSecret }}
                 key: AWS_ACCESS_KEY_ID
+                optional: true
           - name: "AWS_SECRET_ACCESS_KEY"
             valueFrom:
               secretKeyRef:
                 name: {{ .Values.awsAccessSecret }}
                 key: AWS_SECRET_ACCESS_KEY
+                optional: true
                 
           - name: "SCHEDULER_BACKEND"
             value: {{ .Values.SCHEDULER_BACKEND | quote }}
