@@ -17,6 +17,7 @@ KAFKA_OAUTH_CLIENT_ID: dpn-service-client # Keycloak service-account client
 # dpn-realm — fetching via the LB hostname instead produces a token the
 # broker rejects with SASL invalid_token (confirmed against a running broker).
 KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
+OTEL_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak-service-lb.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
 kafkaTlsSecretName: dpn-tls
 kafkaOauthSecretName: dpn-keycloak-secrets
 # TRUSTSTORE_PASSWORD/KEYSTORE_PASSWORD for dpn-tls's truststore.jks/

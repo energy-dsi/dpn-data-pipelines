@@ -77,6 +77,8 @@ spec:
                   key: KC_SERVICE_CLIENT_SECRET
             - name: "KAFKA_OAUTH_TOKEN_ENDPOINT_URL"
               value: {{ .Values.KAFKA_OAUTH_TOKEN_ENDPOINT_URL | quote }}
+            - name: "OTEL_OAUTH_TOKEN_ENDPOINT_URL"
+              value: {{ .Values.OTEL_OAUTH_TOKEN_ENDPOINT_URL | quote }}
             - name: "KAFKA_SSL_CA_LOCATION"
               value: {{ .Values.KAFKA_SSL_CA_LOCATION | quote }}
             - name: "TRUSTSTORE_PASSWORD"

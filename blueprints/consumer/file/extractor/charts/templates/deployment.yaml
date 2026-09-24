@@ -64,6 +64,8 @@ spec:
                 key: KC_SERVICE_CLIENT_SECRET
           - name: "KAFKA_OAUTH_TOKEN_ENDPOINT_URL"
             value: {{ .Values.KAFKA_OAUTH_TOKEN_ENDPOINT_URL }}
+          - name: "OTEL_OAUTH_TOKEN_ENDPOINT_URL"
+            value: {{ .Values.OTEL_OAUTH_TOKEN_ENDPOINT_URL }}
           - name: "targetConnectionString"
             valueFrom:
               secretKeyRef:
