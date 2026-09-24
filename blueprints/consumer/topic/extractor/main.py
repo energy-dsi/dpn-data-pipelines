@@ -9,6 +9,8 @@
 # | 2.0.0   | Absorbed schema_mapper — consumes srcTopicName, resolves  | DSI Team      | 2026-09-15  |
 # |         | + enriches + produces straight to the per-product target |               |             |
 # |         | topic, no mapperTopicName relay                          |               |             |
+# | 2.1.0   | Added --run-once so Run Now forces a window on demand;    | DSI Team      | 2026-09-24  |
+# |         | manual trigger now bounded by _TIMEOUT like kafka-trigger |               |             |
 # +---------+----------------------------------------------------------+---------------+-------------+
 
 """
@@ -54,7 +56,7 @@ from dpn_observability_sdk.heartbeat import HeartbeatLogger
 from utils.kafka_security import build_kafka_client_config
 from utils.topic_utils import TopicResolver, KafkaTopicManager
 from utils.pipeline_context import PipelineContext
-from utils.scheduler_backend import get_backend
+from utils.scheduler_backend import get_backend, run_once
 from utils.step_logger import StepLogger
 
 load_dotenv()
@@ -476,8 +478,15 @@ def run(ctx: PipelineContext) -> None:
         # Start main extraction step
         step_log.step_start(ctx, operation)
 
-        # Apply timeout only for kafka-trigger mode
-        timeout = _TIMEOUT if ctx.triggered_by in ["kafka-trigger", "interval"] else None
+        # Apply timeout for every bounded trigger source — "manual" (the
+        # self-service "Run Now" button, see utils/scheduler_backend.py's
+        # run_once()) must stay bounded here too, or a manual run blocks
+        # forever consuming instead of returning after one window.
+        timeout = (
+            _TIMEOUT
+            if ctx.triggered_by in ["kafka-trigger", "interval", "manual"]
+            else None
+        )
         span.set_attribute("pipeline.timeout_seconds", timeout or 0)
 
         try:
@@ -497,31 +506,46 @@ if __name__ == "__main__":
     # Execute pipeline using configured scheduler backend
 
     temp_forwarder = TopicForwarder()
-    heartbeat = HeartbeatLogger(
-        logger=temp_forwarder.logger,
-        component_name=temp_forwarder.component_name,
-        metadata={
-            "source_topic": temp_forwarder.src_topic,
-            "scheduler_backend": os.getenv("SCHEDULER_BACKEND", "standalone"),
-        },
-    )
-    heartbeat.start()
 
-    # Pod deletion/rolling-update sends SIGTERM before the pod is killed —
-    # catching it emits the SDK's own "heartbeat.stopped" event (see
-    # dpn_observability_sdk.heartbeat.HeartbeatLogger.stop) within the grace
-    # period, so the last-known-alive signal is followed by an explicit stop
-    # rather than just silence.
-    def _handle_sigterm(signum, frame):
-        heartbeat.stop()
-        sys.exit(0)
+    if "--run-once" in sys.argv:
+        # Self-service "Run Now" button (see service/podman_ops.py /
+        # k8s_ops.py run_once()): execs this inside the already-running
+        # container to force a single window on demand, bypassing the
+        # scheduler entirely — no heartbeat needed for a process this
+        # short-lived.
+        run_once(
+            run,
+            pipeline_stage="extractor",
+            pipeline_type="topic",
+            pipeline_role="consumer",
+            component_name=temp_forwarder.component_name,
+        )
+    else:
+        heartbeat = HeartbeatLogger(
+            logger=temp_forwarder.logger,
+            component_name=temp_forwarder.component_name,
+            metadata={
+                "source_topic": temp_forwarder.src_topic,
+                "scheduler_backend": os.getenv("SCHEDULER_BACKEND", "standalone"),
+            },
+        )
+        heartbeat.start()
 
-    signal.signal(signal.SIGTERM, _handle_sigterm)
+        # Pod deletion/rolling-update sends SIGTERM before the pod is killed —
+        # catching it emits the SDK's own "heartbeat.stopped" event (see
+        # dpn_observability_sdk.heartbeat.HeartbeatLogger.stop) within the grace
+        # period, so the last-known-alive signal is followed by an explicit stop
+        # rather than just silence.
+        def _handle_sigterm(signum, frame):
+            heartbeat.stop()
+            sys.exit(0)
 
-    get_backend().execute(
-        run,
-        pipeline_stage="extractor",
-        pipeline_type="topic",
-        pipeline_role="consumer",
-        component_name=temp_forwarder.component_name,
-    )
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+
+        get_backend().execute(
+            run,
+            pipeline_stage="extractor",
+            pipeline_type="topic",
+            pipeline_role="consumer",
+            component_name=temp_forwarder.component_name,
+        )

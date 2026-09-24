@@ -50,7 +50,14 @@ OTEL_OAUTH_DISABLED: false  # set true to skip OAuth in dev/test
 # dpn_observability_sdk.heartbeat.HeartbeatLogger's own 5-minute default.
 HEARTBEAT_INTERVAL_SECONDS: 60
 
-SCHEDULER_BACKEND: kafka-trigger # Execution backend (kafka-trigger recommended)
+# interval, not kafka-trigger: this self-service deployment has no Airflow
+# (or any other orchestrator) publishing to PIPELINE_CONTROL_TOPIC, so
+# kafka-trigger left this pod waiting forever for a trigger that never
+# comes — "automatic" mode never actually ran a cycle. IntervalBackend
+# self-ticks every scheduleInterval seconds instead, same as every
+# self-service-created producer data product already does (see
+# service/env_builder.py).
+SCHEDULER_BACKEND: interval # Execution backend (interval — no Airflow in this deployment)
 # Starting default only — the self-service UI's Pause/Resume toggle (see
 # service/consumers.py) patches this Deployment's actual EXECUTION_MODE
 # in place at runtime, independent of this chart value.

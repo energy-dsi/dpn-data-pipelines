@@ -26,6 +26,10 @@ v1.2.0  OTEL Collector Integration (2026-06-26)
 v2.0.0  Absorbed schema_mapper — direct source -> target copy, single
         publish to targetTopicName, no staging container/mapper topic
         (2026-09-15)
+v2.1.0  Added --run-once support so the self-service UI's Run Now button
+        (service/k8s_ops.py's run_once()) actually forces a single cycle
+        instead of silently re-entering the kafka-trigger wait loop
+        (2026-09-24)
 
 Execution (Kubernetes Recommended)
 ---------------------------------
@@ -39,6 +43,7 @@ PRODUCT_NAME=consumer-file
 # | 1.1.0   | Kafka Trigger and StepLogger Integration                 | DSI Team      | 2026-05-26  |
 # | 1.2.0   | OTEL Collector Integration                               | DSI Team      | 2026-06-26  |
 # | 2.0.0   | Absorbed schema_mapper — single container, direct copy   | DSI Team      | 2026-09-15  |
+# | 2.1.0   | Added --run-once so Run Now forces a cycle               | DSI Team      | 2026-09-24  |
 # +---------+----------------------------------------------------------+---------------+-------------+
 
 from __future__ import annotations
@@ -68,7 +73,7 @@ from dpn_observability_sdk.otel_metrics import OtelMetrics
 from dpn_observability_sdk.otel_instrumentation import traced, timed_metric
 from dpn_observability_sdk.heartbeat import HeartbeatLogger
 from utils.pipeline_context import PipelineContext
-from utils.scheduler_backend import get_backend
+from utils.scheduler_backend import get_backend, run_once
 from utils.step_logger import StepLogger
 from utils.topic_utils import TopicResolver, KafkaTopicManager
 
@@ -524,33 +529,48 @@ if __name__ == "__main__":
         standalone     → one-time execution
     """
     temp_proc = ExtractorFileProcess()
-    heartbeat = HeartbeatLogger(
-        logger=temp_proc.logger,
-        component_name=temp_proc.component_name,
-        metadata={
-            "kafka_topic": temp_proc.kafka_topic,
-            "src_container": temp_proc.src_container,
-            "cloud_provider": temp_proc.cloud_provider,
-            "scheduler_backend": os.getenv("SCHEDULER_BACKEND", "standalone"),
-        },
-    )
-    heartbeat.start()
 
-    # Pod deletion/rolling-update sends SIGTERM before the pod is killed —
-    # catching it emits the SDK's own "heartbeat.stopped" event (see
-    # dpn_observability_sdk.heartbeat.HeartbeatLogger.stop) within the grace
-    # period, so the last-known-alive signal is followed by an explicit stop
-    # rather than just silence.
-    def _handle_sigterm(signum, frame):
-        heartbeat.stop()
-        sys.exit(0)
+    if "--run-once" in sys.argv:
+        # Self-service "Run Now" button (see service/podman_ops.py /
+        # k8s_ops.py run_once()): execs this inside the already-running
+        # container to force a single cycle on demand, bypassing the
+        # scheduler entirely — no heartbeat needed for a process this
+        # short-lived.
+        run_once(
+            run,
+            pipeline_stage="extractor",
+            pipeline_type="file",
+            pipeline_role="consumer",
+            component_name=temp_proc.component_name,
+        )
+    else:
+        heartbeat = HeartbeatLogger(
+            logger=temp_proc.logger,
+            component_name=temp_proc.component_name,
+            metadata={
+                "kafka_topic": temp_proc.kafka_topic,
+                "src_container": temp_proc.src_container,
+                "cloud_provider": temp_proc.cloud_provider,
+                "scheduler_backend": os.getenv("SCHEDULER_BACKEND", "standalone"),
+            },
+        )
+        heartbeat.start()
 
-    signal.signal(signal.SIGTERM, _handle_sigterm)
+        # Pod deletion/rolling-update sends SIGTERM before the pod is killed —
+        # catching it emits the SDK's own "heartbeat.stopped" event (see
+        # dpn_observability_sdk.heartbeat.HeartbeatLogger.stop) within the grace
+        # period, so the last-known-alive signal is followed by an explicit stop
+        # rather than just silence.
+        def _handle_sigterm(signum, frame):
+            heartbeat.stop()
+            sys.exit(0)
 
-    get_backend().execute(
-        run,
-        pipeline_stage="extractor",
-        pipeline_type="file",
-        pipeline_role="consumer",
-        component_name=temp_proc.component_name,
-    )
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+
+        get_backend().execute(
+            run,
+            pipeline_stage="extractor",
+            pipeline_type="file",
+            pipeline_role="consumer",
+            component_name=temp_proc.component_name,
+        )

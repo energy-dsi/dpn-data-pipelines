@@ -24,7 +24,12 @@ spec:
               memory: "256Mi"
               cpu: "100m"
             limits:
-              memory: "256Mi"
+              # 512Mi, not 256Mi: limit == request left zero burst headroom,
+              # and this pod was observed OOMKilled (exit 137) twice in ~30
+              # minutes even while idle between kafka-trigger cycles — let
+              # alone once it's actually doing list_files()/file_copy() work
+              # every interval tick.
+              memory: "512Mi"
               cpu: "200m"
           securityContext:
             allowPrivilegeEscalation: false
