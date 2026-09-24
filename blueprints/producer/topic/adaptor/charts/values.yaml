@@ -13,6 +13,7 @@ KAFKA_SECURITY_PROTOCOL: SASL_SSL
 KAFKA_SASL_MECHANISM: OAUTHBEARER
 KAFKA_OAUTH_CLIENT_ID: dpn-service-client
 KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
+OTEL_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak-service-lb.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
 
 kafkaTlsSecretName: dpn-tls
 kafkaOauthSecretName: dpn-keycloak-secrets
