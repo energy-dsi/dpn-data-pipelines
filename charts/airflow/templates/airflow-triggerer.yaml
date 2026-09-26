@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpn-airflow-triggerer
+  labels:
+    app: dpn-airflow-triggerer
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: dpn-airflow-triggerer
+
+  template:
+    metadata:
+      labels:
+        app: dpn-airflow-triggerer
+
+    spec:
+      containers:
+        - name: dpn-airflow-triggerer
+          image: "{{ .Values.airflow.image.repository }}:{{ .Values.airflow.image.tag }}"
+          imagePullPolicy: {{ .Values.airflow.image.pullPolicy }}
+
+          command: ["airflow", "triggerer"]
+
+          envFrom:
+            - configMapRef:
+                name: dpn-airflow-config
+            - secretRef:
+                name: dpn-airflow-secrets
+
+          env:
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: "postgresql+psycopg2://{{ .Values.postgres.username }}:$(POSTGRES_PASSWORD)@$(AIRFLOW__DATABASE__HOST):$(AIRFLOW__DATABASE__PORT)/{{ .Values.postgres.db }}"
+
+            - name: AIRFLOW__CELERY__RESULT_BACKEND
+              value: "db+postgresql://{{ .Values.postgres.username }}:$(POSTGRES_PASSWORD)@$(AIRFLOW__DATABASE__HOST):$(AIRFLOW__DATABASE__PORT)/{{ .Values.postgres.db }}"
+
+            - name: AIRFLOW__CORE__FERNET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dpn-airflow-secrets
+                  key: FERNET_KEY
+
+            - name: AIRFLOW__WEBSERVER__SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dpn-airflow-secrets
+                  key: WEB_SECRET_KEY
+
+          volumeMounts:
+          {{- range $path, $_ := .Files.Glob "dags/*.py" }}
+            - name: dpn-airflow-dags
+              mountPath: "/opt/airflow/dags/{{ base $path }}"
+              subPath: "{{ base $path }}"
+          {{- end }}
+
+            - name: airflow-secrets-store
+              mountPath: /mnt/secrets
+              readOnly: true
+
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "400m"
+              memory: "1Gi"
+
+          securityContext:
+            runAsUser: 50000
+            runAsGroup: 50000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+
+      volumes:
+        - name: dpn-airflow-dags
+          configMap:
+            name: dpn-airflow-dags
+
+        - name: airflow-secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: dpn-airflow-kv-secrets
+
+      automountServiceAccountToken: false

@@ -1,0 +1,42 @@
+# Local 3-stage consumer pipeline, all running on the CVE-hardened
+# multi-stage image (localhost/dpn-extractor-fixed:test).
+#
+#   dp-consumer-stage  -> source    (extracts / stages incoming data)
+#   dp-consumer-trfm   -> mapper     (schema-maps / transforms)
+#   dp-consumer-target -> target     (writes to the target sink)
+#
+# Bring up:   podman-compose -f dp-consumer-stack/compose.yaml up -d
+# Tear down:  podman-compose -f dp-consumer-stack/compose.yaml down
+#
+# NOTE: the real apps (python main.py) need a Kafka broker + env config to do
+# useful work. The default command below keeps each container alive and prints
+# its role so the stack can be spun up and inspected without a broker. Swap the
+# `command:` for `["python", "main.py"]` once Kafka + env are wired in.
+services:
+  dp-consumer-stage:
+    image: localhost/dpn-extractor-fixed:test
+    container_name: dp-consumer-stage
+    environment:
+      ROLE: source
+    command: ["sh", "-c", "echo \"[dp-consumer-stage] role=$$ROLE python=$$(python --version)\"; exec sleep infinity"]
+    restart: unless-stopped
+
+  dp-consumer-trfm:
+    image: localhost/dpn-extractor-fixed:test
+    container_name: dp-consumer-trfm
+    environment:
+      ROLE: mapper
+    command: ["sh", "-c", "echo \"[dp-consumer-trfm] role=$$ROLE python=$$(python --version)\"; exec sleep infinity"]
+    restart: unless-stopped
+    depends_on:
+      - dp-consumer-stage
+
+  dp-consumer-target:
+    image: localhost/dpn-extractor-fixed:test
+    container_name: dp-consumer-target
+    environment:
+      ROLE: target
+    command: ["sh", "-c", "echo \"[dp-consumer-target] role=$$ROLE python=$$(python --version)\"; exec sleep infinity"]
+    restart: unless-stopped
+    depends_on:
+      - dp-consumer-trfm

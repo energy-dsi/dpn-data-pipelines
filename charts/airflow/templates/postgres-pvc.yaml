@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.postgres.persistence.claimName }}
+  labels:
+    app: {{ .Values.postgres.name }}
+
+spec:
+  accessModes:
+    - ReadWriteOnce
+
+  storageClassName: {{ .Values.postgres.persistence.storageClassName | quote }}
+
+  resources:
+    requests:
+      storage: {{ .Values.postgres.persistence.size | default "10Gi" | quote }}

@@ -1,0 +1,168 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpn-airflow-worker
+  labels:
+    app: dpn-airflow-worker
+
+spec:
+  selector:
+    matchLabels:
+      app: dpn-airflow-worker
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+
+  template:
+    metadata:
+      labels:
+        app: dpn-airflow-worker
+
+    spec:
+      terminationGracePeriodSeconds: 600
+      containers:
+        - name: dpn-airflow-worker
+
+          image: "{{ .Values.airflow.image.repository }}:{{ .Values.airflow.image.tag }}"
+          imagePullPolicy: {{ .Values.airflow.image.pullPolicy }}
+
+          command:
+            - airflow
+            - celery
+            - worker
+
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/bash", "-c", "airflow celery stop || true"]
+
+          envFrom:
+            - configMapRef:
+                name: dpn-airflow-config
+            - secretRef:
+                name: dpn-airflow-secrets
+
+          env:
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: "postgresql+psycopg2://{{ .Values.postgres.username }}:$(POSTGRES_PASSWORD)@$(AIRFLOW__DATABASE__HOST):$(AIRFLOW__DATABASE__PORT)/{{ .Values.postgres.db }}"
+
+            - name: AIRFLOW__CELERY__RESULT_BACKEND
+              value: "db+postgresql://{{ .Values.postgres.username }}:$(POSTGRES_PASSWORD)@$(AIRFLOW__DATABASE__HOST):$(AIRFLOW__DATABASE__PORT)/{{ .Values.postgres.db }}"
+
+            - name: AIRFLOW__CORE__FERNET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dpn-airflow-secrets
+                  key: FERNET_KEY
+
+            - name: AIRFLOW__WEBSERVER__SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dpn-airflow-secrets
+                  key: WEB_SECRET_KEY
+
+            # ---- Kafka security (SASL/TLS: SASL_SSL + SASL_OAUTHBEARER/Keycloak) ----
+            # Consumed by utils/kafka_trigger.py + utils/kafka_security.py for the
+            # kafka-trigger DAGs' control/status topic publish+poll. Must match the
+            # adaptor/mapper pods' Kafka client config, since they talk to the same
+            # SASL_SSL-only broker listeners.
+            - name: "KAFKA_SECURITY_PROTOCOL"
+              value: {{ (.Values.kafka).securityProtocol | default "SASL_SSL" | quote }}
+
+            - name: "KAFKA_SASL_MECHANISM"
+              value: {{ (.Values.kafka).saslMechanism | default "OAUTHBEARER" | quote }}
+
+            - name: "KAFKA_OAUTH_CLIENT_ID"
+              value: {{ (.Values.kafka).oauthClientId | default "" | quote }}
+
+            # dpn-service-client's secret is now owned by dpn-authentication-service's
+            # Keycloak chart (dpn-keycloak-secrets/KC_SERVICE_CLIENT_SECRET) rather than
+            # independently pulled here as KAFKA-OAUTH-CLIENT-SECRET.
+            - name: "KAFKA_OAUTH_CLIENT_SECRET"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ (.Values.kafka).oauthSecretName | default "dpn-keycloak-secrets" }}
+                  key: KC_SERVICE_CLIENT_SECRET
+
+            - name: "KAFKA_OAUTH_TOKEN_ENDPOINT_URL"
+              value: {{ (.Values.kafka).oauthTokenEndpointUrl | default "" | quote }}
+
+            - name: "KAFKA_SSL_CA_LOCATION"
+              value: {{ (.Values.kafka).sslCaLocation | default "/etc/secrets/truststore.jks" | quote }}
+
+            # Password for the common truststore.jks in the dpn-tls Secret
+            # (already mounted below at /etc/secrets/truststore.jks). When present,
+            # utils/kafka_truststore.py prefers it over the plain ca.crt PEM
+            # above -- see .docs/kafka-auth-modes.md.
+            # Read straight from tls-auth-secret (created once by dpn-tls-cd) -
+            # the universal DPN platform truststore password every other DPN
+            # component uses too - instead of kafka-kv-secrets' now-retired
+            # kafka-secrets copy of the same Key Vault value.
+            - name: "TRUSTSTORE_PASSWORD"
+              valueFrom:
+                secretKeyRef:
+                  name: tls-auth-secret
+                  key: TRUSTSTORE_PASSWORD
+
+          volumeMounts:
+          {{- range $path, $_ := .Files.Glob "dags/*.py" }}
+            - name: dpn-airflow-dags
+              mountPath: "/opt/airflow/dags/{{ base $path }}"
+              subPath: "{{ base $path }}"
+          {{- end }}
+
+            - name: airflow-secrets-store
+              mountPath: /mnt/secrets
+              readOnly: true
+
+            - name: dpn-tls
+              mountPath: /etc/secrets/truststore.jks
+              subPath: truststore.jks
+              readOnly: true
+
+            # librdkafka's OIDC token-fetch HTTP client ignores both
+            # ssl.ca.location and (on this image) SSL_CERT_FILE: the
+            # confluent-kafka wheel here is a prebuilt manylinux wheel with a
+            # statically-linked OpenSSL compiled with a CentOS-style default
+            # cert path baked in, which doesn't exist on this Debian image.
+            # Placing the real CA there directly sidesteps needing the env
+            # var to be honored at all. See .docs/kafka-auth-modes.md.
+            - name: dpn-tls
+              mountPath: /etc/pki/tls/certs/ca-bundle.crt
+              subPath: ca.crt
+              readOnly: true
+
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "4Gi"
+            limits:
+              cpu: "2000m"
+              memory: "6Gi"
+
+          securityContext:
+            runAsUser: 50000
+            runAsGroup: 50000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+
+      volumes:
+        - name: dpn-airflow-dags
+          configMap:
+            name: dpn-airflow-dags
+
+        - name: airflow-secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: dpn-airflow-kv-secrets
+
+        - name: dpn-tls
+          secret:
+            secretName: {{ (.Values.kafka).tlsSecretName | default "dpn-tls" }}
+
+      automountServiceAccountToken: false

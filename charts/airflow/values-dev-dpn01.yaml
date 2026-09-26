@@ -1,0 +1,153 @@
+namespace: ns-dpn-01
+
+airflow:
+  name: dpn-airflow
+
+  image:
+    repository: <<CONTAINER_REGISTRY_URL>>/base/apache-airflow
+    tag: "2.9.1"
+    pullPolicy: Always
+
+  dags:
+    path: /opt/airflow/dags
+
+  webserver:
+    replicaCount: 1
+
+    service:
+      name: dpn-airflow-webserver
+      type: LoadBalancer
+
+      #annotations:
+      #  service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+      internalLoadBalancer: true
+      loadBalancerIP: <<your specific value>>
+
+      port: 8080
+      targetPort: 8080
+
+  scheduler:
+    replicaCount: 1
+
+  worker:
+    replicaCount: 1
+
+  triggerer:
+    replicaCount: 1
+
+# ===========================================
+# Redis (Celery broker)
+# ===========================================
+redis:
+  name: dpn-airflow-redis
+  replicaCount: 1
+
+  image:
+    repository: <<CONTAINER_REGISTRY_URL>>/base/redis
+    tag: "7.2"
+    pullPolicy: Always
+
+  service:
+    port: 6379
+    type: ClusterIP
+
+  args:
+    - "--save"
+    - "60 1"
+    - "--appendonly"
+    - "no"
+    - "--loglevel"
+    - "warning"
+
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+postgres:
+  name: dpn-airflow-postgres
+  replicaCount: 1
+
+  image:
+    repository: <<CONTAINER_REGISTRY_URL>>/base/postgres
+    tag: "16-alpine"
+    pullPolicy: Always
+
+  service:
+    port: 5432
+    type: ClusterIP
+
+  username: airflow
+  db: airflow
+
+  persistence:
+    enabled: true
+    claimName: dpn-airflow-postgres-pvc
+    storageClassName: managed-csi
+    size: 10Gi
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "1Gi"
+    limits:
+      cpu: "500m"
+      memory: "2Gi"
+
+monitoring:
+  prometheus:
+    image:
+      repository: <<CONTAINER_REGISTRY_URL>>/base/prom-prometheus
+      tag: "v2.52.0"
+
+  grafana:
+    image:
+      repository: <<CONTAINER_REGISTRY_URL>>/base/grafana-grafana
+      tag: "10.4.2"
+
+  statsdExporter:
+    image:
+      repository: <<CONTAINER_REGISTRY_URL>>/base/prom-statsd-exporter
+      tag: "v0.26.1"
+
+config:
+  executor: CeleryExecutor
+  loadExamples: false
+  dagsPausedAtCreation: true
+
+  dagsFolder: /opt/airflow/dags
+  workerConcurrency: 4
+
+  brokerUrl: redis://dpn-airflow-redis:6379/0
+
+keyvault:
+  clientID: <<your specific value>>
+  name: <<your specific value>>
+  tenantId: <<your specific value>>
+
+# ===========================================
+# Kafka client security (control/status topics used by the
+# kafka-trigger DAGs). Must match the SASL_SSL + OAUTHBEARER
+# setup on dpn-kafka-src, or trigger/status messages are silently
+# dropped at the TCP/handshake layer instead of raising in Airflow.
+# ===========================================
+kafka:
+  securityProtocol: SASL_SSL
+  saslMechanism: OAUTHBEARER
+  oauthClientId: dpn-service-client
+  oauthTokenEndpointUrl: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
+  sslCaLocation: /etc/secrets/truststore.jks
+  tlsSecretName: dpn-tls
+  oauthSecretName: dpn-keycloak-secrets
+
+# ===========================================
+# Airflow webserver SSO (AUTH_TYPE=AUTH_OAUTH against Keycloak). Shares the
+# same dpn-service-client + client secret as the kafka block above.
+# ===========================================
+oidc:
+  clientId: dpn-service-client
+  clientSecretName: dpn-keycloak-secrets
+  clientSecretKey: KC_SERVICE_CLIENT_SECRET
+  keycloakInternalUrl: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm

@@ -1,0 +1,392 @@
+name: DPN CD - Data Pipelines
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select Environment"
+        required: true
+        default: "test"
+        type: choice
+        options:
+          - dev
+          - test
+
+      cluster:
+        description: "Target DPN Cluster"
+        required: true
+        default: "dpn01"
+        type: choice
+        options:
+          - dpn01
+          - dpn02
+
+      cloud:
+        description: "Target Cloud Provider"
+        required: true
+        default: "aws"
+        type: choice
+        options:
+          - azure
+          - aws
+          - gcp
+
+      configType:
+        description: "Select Config Type"
+        required: true
+        type: choice
+        options:
+          - producer
+          - consumer
+
+      processType:
+        description: "Select Process Type"
+        required: true
+        default: "file"
+        type: choice
+        options:
+          - file
+          - topic
+
+      productType:
+        description: "Enter Product Type"
+        required: true
+        default: "default"
+        type: string
+
+      schemaType:
+        description: "Enter Schema Type (eq/eqbd/ssh/dl..)"
+        required: true
+        default: "default"
+        type: string
+
+      imageTag:
+        description: "Image Tag To Deploy"
+        required: true
+        type: string
+
+env:
+  PROJECT_NAME: dsi-data-pipelines
+  PARAMETERS_FILE: .github/config/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.json
+  PROCESS_TYPE: ${{ inputs.processType }}
+  CONFIG_TYPE: ${{ inputs.configType }}
+  IMAGE_TAG: ${{ inputs.imageTag }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Helm Deploy
+    runs-on: [self-hosted, vmss]
+    environment: ${{ inputs.environment }}-${{ inputs.cluster }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Applied Parameters
+        shell: bash
+        run: |
+          echo "environment=${{ inputs.environment }}"
+          echo "cluster=${{ inputs.cluster }}"
+          echo "cloud=${{ inputs.cloud }}"
+          echo "configType=${{ inputs.configType }}"
+          echo "processType=${{ inputs.processType }}"
+          echo "productType=${{ inputs.productType }}"
+          echo "schemaType=${{ inputs.schemaType }}"
+          echo "imageTag=${{ inputs.imageTag }}"
+
+      - name: Normalize Product/Schema Type Casing
+        shell: bash
+        run: |
+          echo "PRODUCT_TYPE=$(echo '${{ inputs.productType }}' | tr '[:upper:]' '[:lower:]' | tr '_' '-')" >> "$GITHUB_ENV"
+          echo "SCHEMA_TYPE=$(echo '${{ inputs.schemaType }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Read Deployment Config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "${PARAMETERS_FILE}" ]; then
+            echo "ERROR: ${PARAMETERS_FILE} not found!"
+            exit 1
+          fi
+
+          echo "Loading config from ${PARAMETERS_FILE}"
+          for key in $(jq -r 'keys_unsorted[]' "${PARAMETERS_FILE}"); do
+            value=$(jq -r ".\"$key\"" "${PARAMETERS_FILE}")
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+            echo "Set ${key}"
+          done
+
+      - name: Cloud Login
+        uses: ./.github/actions/cloud-login
+        with:
+          cloud: ${{ inputs.cloud }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-account-id: ${{ env.AWS_ACCOUNT_ID }}
+          eks-cluster: ${{ env.EKS_CLUSTER }}
+
+      - name: Verify Cluster Access
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          helm ls -n "$NAMESPACE"
+
+      ###################################################################
+      # HELM DEPLOY
+      ###################################################################
+      - name: Helm Deploy
+        shell: bash
+        working-directory: dpn-data-pipelines
+        run: |
+          set -euo pipefail
+
+          # ###################################################################
+          # AWS IRSA — IAM role per chart's ServiceAccount (file-processType
+          # charts only; topic-processType charts have no S3/serviceAccount
+          # config at all). Looked up once per cluster, reused for every chart
+          # processed in this run. Each role's S3 permissions are scoped to
+          # exactly the 3 buckets that chart's own src/mapper/target config
+          # resolves to (computed below), not a broad wildcard.
+          # ###################################################################
+          if [[ "${{ inputs.cloud }}" == "aws" && "$PROCESS_TYPE" == "file" ]]; then
+            OIDC_ISSUER=$(aws eks describe-cluster \
+              --name "$EKS_CLUSTER" \
+              --region "$AWS_REGION" \
+              --query "cluster.identity.oidc.issuer" --output text)
+            OIDC_PROVIDER=${OIDC_ISSUER#https://}
+          fi
+
+          provision_irsa_role() {
+            local chart_location="$1"
+            local bucket1="$2"
+            local bucket2="$3"
+            local bucket3="$4"
+
+            local sa_name
+            sa_name=$(grep -A2 '^serviceAccount:' "$chart_location/values.yaml" | grep 'name:' | sed -E 's/.*name: *"?([^"]*)"?.*/\1/')
+
+            if [ -z "$sa_name" ]; then
+              echo "No serviceAccount.name found in $chart_location/values.yaml — skipping IRSA provisioning."
+              return
+            fi
+
+            local role_name="${sa_name}-s3-role"
+
+            cat > irsa-trust-policy.json <<EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
+                },
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${OIDC_PROVIDER}:aud": "sts.amazonaws.com",
+                    "${OIDC_PROVIDER}:sub": "system:serviceaccount:${NAMESPACE}:${sa_name}"
+                  }
+                }
+              }
+            ]
+          }
+          EOF
+
+            # Scoped to exactly the 3 buckets this chart's own src/mapper/target
+            # config resolves to (not a broad wildcard) — least-privilege per role.
+            cat > irsa-permissions-policy.json <<EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": ["s3:GetObject", "s3:PutObject", "s3:ListBucket", "s3:DeleteObject"],
+                "Resource": [
+                  "arn:aws:s3:::${bucket1}", "arn:aws:s3:::${bucket1}/*",
+                  "arn:aws:s3:::${bucket2}", "arn:aws:s3:::${bucket2}/*",
+                  "arn:aws:s3:::${bucket3}", "arn:aws:s3:::${bucket3}/*"
+                ]
+              }
+            ]
+          }
+          EOF
+
+            if aws iam get-role --role-name "$role_name" >/dev/null 2>&1; then
+              echo "Role $role_name already exists — updating trust policy."
+              aws iam update-assume-role-policy \
+                --role-name "$role_name" \
+                --policy-document file://irsa-trust-policy.json
+            else
+              aws iam create-role \
+                --role-name "$role_name" \
+                --assume-role-policy-document file://irsa-trust-policy.json
+              echo "Created role $role_name."
+            fi
+
+            aws iam put-role-policy \
+              --role-name "$role_name" \
+              --policy-name "${sa_name}-s3-permissions" \
+              --policy-document file://irsa-permissions-policy.json
+
+            IRSA_ROLE_ARN=$(aws iam get-role --role-name "$role_name" --query "Role.Arn" --output text)
+            echo "IRSA role ready for $sa_name: $IRSA_ROLE_ARN"
+          }
+
+          # ###################################################################
+          # AWS S3 buckets — created (if missing) per pipeline stage, named to
+          # match the existing dev-dpn01 convention: <containerName>-<env>-
+          # <clusterNum>-<account>-<region>, e.g. bp-natural-gas-raw-test-01-
+          # <<your specific value>>-eu-west-2. One exception: the consumer "stage" bucket
+          # already exists under a differently-styled name from when
+          # file-scan-service was onboarded — reuse that one as-is instead of
+          # deriving/creating a new bucket for it.
+          # ###################################################################
+          get_value() {
+            local file="$1" key="$2"
+            grep "^${key}:" "$file" | head -1 | sed -E 's/^[^:]+:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/'
+          }
+
+          compute_aws_bucket_name() {
+            local raw_name="$1"
+            local cluster_num
+            cluster_num=$(echo "${{ inputs.cluster }}" | grep -o '[0-9]*$')
+            if [[ "$raw_name" == "dp-consumer-stage" ]]; then
+              if [[ "${{ inputs.environment }}" == "test" && "$cluster_num" == "01" ]]; then
+                # test01's consumer-extractor source bucket doubles as
+                # file-scan-service's destBucket there (see
+                # file-scan-service/values/aws/test-dpn01.yaml destBucket and
+                # aws-policy-info/manual-aws-resources.md) — keep this exact,
+                # pre-existing name so that cross-component contract on
+                # test01 isn't broken. Other environments get their own
+                # uniquely-named bucket below instead of colliding with it.
+                echo "dpn-test-01-dp-consumer-stage"
+                return
+              fi
+              echo "dpn-${{ inputs.environment }}-${cluster_num}-dp-consumer-stage-${AWS_ACCOUNT_ID}-${AWS_REGION}"
+              return
+            fi
+            echo "${raw_name}-${{ inputs.environment }}-${cluster_num}-${AWS_ACCOUNT_ID}-${AWS_REGION}"
+          }
+
+          create_bucket_if_missing() {
+            local bucket_name="$1"
+            if aws s3api head-bucket --bucket "$bucket_name" 2>/dev/null; then
+              echo "Bucket $bucket_name already exists."
+            else
+              echo "Creating bucket $bucket_name..."
+              aws s3api create-bucket \
+                --bucket "$bucket_name" \
+                --region "$AWS_REGION" \
+                --create-bucket-configuration LocationConstraint="$AWS_REGION"
+              aws s3api put-public-access-block \
+                --bucket "$bucket_name" \
+                --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+              aws s3api put-bucket-encryption \
+                --bucket "$bucket_name" \
+                --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+              echo "Created bucket $bucket_name."
+            fi
+          }
+
+          processCharts() {
+            while IFS= read -r chart; do
+              dir_path=$(dirname "$chart")
+              CHART_LOCATION=$chart
+              echo "CHART_LOCATION: $CHART_LOCATION"
+              echo "DIR_PATH: $dir_path"
+              base_name=$(basename "$dir_path")
+              echo "BASE_NAME: $base_name"
+
+              if [[ "$base_name" == *"schema_mapper"* ]]; then
+                base_name="mapper"
+                echo "Updated base_name: $base_name"
+              fi
+
+              if [[ "$CONFIG_TYPE" == "producer" ]]; then
+                IMAGE_NAME="dpn-$CONFIG_TYPE-$PROCESS_TYPE-$base_name-$SCHEMA_TYPE"
+                POD_NAME="dpn-$CONFIG_TYPE-$PROCESS_TYPE-$base_name-$PRODUCT_TYPE"
+              elif [[ "$CONFIG_TYPE" == "consumer" ]]; then
+                IMAGE_NAME="dpn-$CONFIG_TYPE-$PROCESS_TYPE-$base_name"
+                POD_NAME="dpn-$CONFIG_TYPE-$PROCESS_TYPE-$base_name"
+              fi
+
+              BUCKET_ARGS=()
+              if [[ "${{ inputs.cloud }}" == "aws" && "$PROCESS_TYPE" == "file" ]]; then
+                RAW_SRC=$(get_value "$CHART_LOCATION/values.yaml" "srcContainerName")
+                RAW_MAPPER=$(get_value "$CHART_LOCATION/values.yaml" "mapperContainerName")
+                RAW_TARGET=$(get_value "$CHART_LOCATION/values.yaml" "targetContainerName")
+
+                AWS_SRC_BUCKET=$(compute_aws_bucket_name "$RAW_SRC")
+                AWS_MAPPER_BUCKET=$(compute_aws_bucket_name "$RAW_MAPPER")
+                AWS_TARGET_BUCKET=$(compute_aws_bucket_name "$RAW_TARGET")
+
+                create_bucket_if_missing "$AWS_SRC_BUCKET"
+                create_bucket_if_missing "$AWS_MAPPER_BUCKET"
+                create_bucket_if_missing "$AWS_TARGET_BUCKET"
+
+                IRSA_ROLE_ARN=""
+                provision_irsa_role "$CHART_LOCATION" "$AWS_SRC_BUCKET" "$AWS_MAPPER_BUCKET" "$AWS_TARGET_BUCKET"
+
+                echo "AWS bucket mapping: src=$AWS_SRC_BUCKET mapper=$AWS_MAPPER_BUCKET target=$AWS_TARGET_BUCKET"
+                BUCKET_ARGS=(--set srcContainerName="$AWS_SRC_BUCKET",mapperContainerName="$AWS_MAPPER_BUCKET",targetContainerName="$AWS_TARGET_BUCKET")
+                # values.yaml's serviceAccount.irsaRoleArn is a stale, hardcoded
+                # test01 ARN left over from before this chart was made
+                # multi-environment — always override it with the ARN actually
+                # provisioned above for this run's account, so a deploy to any
+                # other environment doesn't silently bind to test01's role.
+                if [ -n "$IRSA_ROLE_ARN" ]; then
+                  BUCKET_ARGS+=(--set serviceAccount.irsaRoleArn="$IRSA_ROLE_ARN")
+                fi
+              fi
+
+              # imageName is computed fresh every run from folder structure
+              # (+ schemaType for producer) - this is the real, live image
+              # name, not a fallback. Each chart's static values.yaml imageName
+              # is vestigial/always overridden here, same as upstream source -
+              # do not remove this, only the (now-removed) imageName OVERRIDE
+              # INPUT was the bug: that one applied a single manual value
+              # blanket to every chart processed in a run (e.g. both extractor
+              # AND schema_mapper in one consumer/file dispatch), which once
+              # caused the mapper release to silently deploy the extractor's
+              # image. imageRegistry, by contrast, is NOT set here - it comes
+              # from each chart's own values.yaml (<<your specific value>>).
+              PROJECT_NAME="$IMAGE_NAME"
+
+              echo "IMAGE_NAME: $IMAGE_NAME"
+              echo "POD_NAME: $POD_NAME"
+              echo "PROJECT_NAME (Helm release name): $PROJECT_NAME"
+
+              echo "========================================"
+              echo "HELM DEPLOY"
+              echo "========================================"
+              helm upgrade --install "$PROJECT_NAME" "$CHART_LOCATION" \
+                --set namespace="$NAMESPACE",imageName="$IMAGE_NAME",imageTag="$IMAGE_TAG" \
+                --set schemaType="$SCHEMA_TYPE",name="$POD_NAME",productType="$PRODUCT_TYPE" \
+                --set cloudProviderType="${{ inputs.cloud }}" \
+                "${BUCKET_ARGS[@]}" \
+                -n "$NAMESPACE"
+              echo "Helm deploy of $PROJECT_NAME OK"
+            done < charts.txt
+          }
+
+          case "$CONFIG_TYPE" in
+            consumer)
+              echo "Consumer Organization"
+              find "$CONFIG_TYPE/$PROCESS_TYPE" -name "charts" -not -path "./blueprints/*" > charts.txt
+              processCharts
+              ;;
+            producer)
+              echo "Producer Organization"
+              find "$CONFIG_TYPE/$PROCESS_TYPE/${PRODUCT_TYPE,,}" -name "charts" -not -path "./blueprints/*" > charts.txt
+              processCharts
+              ;;
+          esac
+
+          rm charts.txt

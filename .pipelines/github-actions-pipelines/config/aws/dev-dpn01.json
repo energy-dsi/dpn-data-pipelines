@@ -1,0 +1,11 @@
+{
+  "AWS_REGION": "eu-west-2",
+  "AWS_ACCOUNT_ID": "<<your specific value>>",
+  "EKS_CLUSTER": "<<your specific value>>",
+  "NAMESPACE": "ns-dpn-01",
+  "IMAGE_REGISTRY": "<<your specific value>>",
+  "FILESCAN_SOURCE_BUCKET": "<<your specific value>>",
+  "FILESCAN_DEST_BUCKET": "<<your specific value>>",
+  "FILESCAN_SNS_TOPIC_NAME": "dpn-dev-01-guardduty-findings2",
+  "FILESCAN_SQS_QUEUE_NAME": "dpn-dev-01-file-scan-results2"
+}

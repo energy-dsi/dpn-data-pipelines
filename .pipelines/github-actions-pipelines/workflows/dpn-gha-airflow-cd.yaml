@@ -1,0 +1,358 @@
+name: DPN CD - Airflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select Environment"
+        required: true
+        default: "test"
+        type: choice
+        options:
+          - dev
+          - test
+
+      cluster:
+        description: "Choose DPN Cluster"
+        required: true
+        default: "dpn01"
+        type: choice
+        options:
+          - dpn01
+          - dpn02
+
+      cloud:
+        description: "Target Cloud Provider"
+        required: true
+        default: "aws"
+        type: choice
+        options:
+          - azure
+          - aws
+          - gcp
+
+      airflowImageRepository:
+        description: "Airflow image path AFTER <<your specific value>>/ (e.g. 1.0.1/airflow) — leave blank to use the environment's configured repository"
+        required: false
+        default: ""
+        type: string
+
+      airflowImageTag:
+        description: "Airflow image tag (leave blank to use the environment's configured tag)"
+        required: false
+        default: ""
+        type: string
+
+      postgresImageRepository:
+        description: "Airflow Postgres image path AFTER <<your specific value>>/ (e.g. 1.0.1/postgres) — leave blank to use the environment's configured repository"
+        required: false
+        default: ""
+        type: string
+
+      postgresImageTag:
+        description: "Airflow Postgres image tag (leave blank to use the environment's configured tag)"
+        required: false
+        default: ""
+        type: string
+
+      redisImageRepository:
+        description: "Airflow Redis image path AFTER <<your specific value>>/ (e.g. 1.0.1/redis) — leave blank to use the environment's configured repository"
+        required: false
+        default: ""
+        type: string
+
+      redisImageTag:
+        description: "Airflow Redis image tag (leave blank to use the environment's configured tag)"
+        required: false
+        default: ""
+        type: string
+
+env:
+  PARAMETERS_FILE: .github/config/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.json
+  HELM_DIR: dpn-data-pipelines/charts/airflow
+  RELEASE_NAME: dpn-airflow
+  VALUES_FILE: dpn-data-pipelines/charts/airflow/values/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.yaml
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Helm Deploy
+    runs-on: [self-hosted, vmss]
+    environment: ${{ inputs.environment }}-${{ inputs.cluster }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Applied Parameters
+        shell: bash
+        run: |
+          echo "environment=${{ inputs.environment }}"
+          echo "cluster=${{ inputs.cluster }}"
+          echo "cloud=${{ inputs.cloud }}"
+          echo "airflowImageRepository=${{ inputs.airflowImageRepository }}"
+          echo "airflowImageTag=${{ inputs.airflowImageTag }}"
+          echo "postgresImageRepository=${{ inputs.postgresImageRepository }}"
+          echo "postgresImageTag=${{ inputs.postgresImageTag }}"
+          echo "redisImageRepository=${{ inputs.redisImageRepository }}"
+          echo "redisImageTag=${{ inputs.redisImageTag }}"
+
+      - name: Read Deployment Config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "${PARAMETERS_FILE}" ]; then
+            echo "ERROR: ${PARAMETERS_FILE} not found!"
+            exit 1
+          fi
+
+          echo "Loading config from ${PARAMETERS_FILE}"
+          for key in $(jq -r 'keys_unsorted[]' "${PARAMETERS_FILE}"); do
+            value=$(jq -r ".\"$key\"" "${PARAMETERS_FILE}")
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+            echo "Set ${key}"
+          done
+
+      - name: Cloud Login
+        uses: ./.github/actions/cloud-login
+        with:
+          cloud: ${{ inputs.cloud }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-account-id: ${{ env.AWS_ACCOUNT_ID }}
+          eks-cluster: ${{ env.EKS_CLUSTER }}
+
+      - name: Ensure Namespace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "===== ENSURE NAMESPACE ====="
+          kubectl get ns "$NAMESPACE" || kubectl create ns "$NAMESPACE"
+
+          echo "===== STORAGE CHECK ====="
+          kubectl get storageclass
+
+          echo "===== CSI DRIVER CHECK ====="
+          kubectl get pods -n kube-system | grep secrets-store || true
+
+      ###################################################################
+      # AWS PREREQUISITES — IRSA role + Secrets Manager entries
+      #
+      # The chart's AWS SecretProviderClass only READS from Secrets Manager,
+      # it never creates entries — so they must exist before the CSI driver
+      # can mount them. Idempotent: creates the role/secrets only if missing,
+      # never overwrites an existing secret's value.
+      ###################################################################
+      - name: Create IAM Role for airflow IRSA
+        if: ${{ inputs.cloud == 'aws' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROLE_NAME="dpn-airflow-secrets-role"
+          SA_NAMESPACE="$NAMESPACE"
+          SA_NAME="dpn-airflow"
+
+          OIDC_ISSUER=$(aws eks describe-cluster \
+            --name "$EKS_CLUSTER" \
+            --region "$AWS_REGION" \
+            --query "cluster.identity.oidc.issuer" --output text)
+          OIDC_PROVIDER=${OIDC_ISSUER#https://}
+
+          cat > airflow-trust-policy.json <<EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
+                },
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${OIDC_PROVIDER}:aud": "sts.amazonaws.com",
+                    "${OIDC_PROVIDER}:sub": "system:serviceaccount:${SA_NAMESPACE}:${SA_NAME}"
+                  }
+                }
+              }
+            ]
+          }
+          EOF
+
+          cat > airflow-permissions-policy.json <<EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+                "Resource": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:dpn/${{ inputs.environment }}-${{ inputs.cluster }}/airflow/*"
+              }
+            ]
+          }
+          EOF
+
+          if aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
+            echo "Role $ROLE_NAME already exists — updating trust policy."
+            aws iam update-assume-role-policy \
+              --role-name "$ROLE_NAME" \
+              --policy-document file://airflow-trust-policy.json
+          else
+            aws iam create-role \
+              --role-name "$ROLE_NAME" \
+              --assume-role-policy-document file://airflow-trust-policy.json
+            echo "Created role $ROLE_NAME."
+          fi
+
+          aws iam put-role-policy \
+            --role-name "$ROLE_NAME" \
+            --policy-name dpn-airflow-permissions \
+            --policy-document file://airflow-permissions-policy.json
+
+          ROLE_ARN=$(aws iam get-role --role-name "$ROLE_NAME" --query "Role.Arn" --output text)
+          echo "IRSA role ready: $ROLE_ARN"
+
+      - name: Create Secrets Manager Entries for airflow
+        if: ${{ inputs.cloud == 'aws' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SECRET_PREFIX="dpn/${{ inputs.environment }}-${{ inputs.cluster }}/airflow"
+
+          create_if_missing() {
+            local key="$1"
+            local value="$2"
+            local secret_name="$SECRET_PREFIX/$key"
+
+            if aws secretsmanager describe-secret --secret-id "$secret_name" >/dev/null 2>&1; then
+              echo "Secret $secret_name already exists — leaving value untouched."
+            else
+              aws secretsmanager create-secret \
+                --name "$secret_name" \
+                --secret-string "$value" >/dev/null
+              echo "Created $secret_name."
+            fi
+          }
+
+          # Fernet key: 32 random bytes, urlsafe-base64-encoded — the exact
+          # scheme cryptography.fernet.Fernet.generate_key() uses. Must be a
+          # real Fernet key: Airflow fails to start on an invalid one.
+          FERNET_KEY=$(python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")
+
+          # Flask secret key (webserver session signing) — any random string.
+          WEB_SECRET_KEY=$(openssl rand -hex 32)
+
+          # Hex-only: this gets embedded unescaped in a postgresql:// URL
+          # (see AIRFLOW__DATABASE__SQL_ALCHEMY_CONN in the chart templates)
+          # — a password containing @, /, or : would break URL parsing.
+          AIR_POSTGRES_PASSWORD=$(openssl rand -hex 24)
+
+          AIRFLOW_ADMIN_PASSWORD=$(openssl rand -base64 24)
+
+          create_if_missing "FERNET_KEY" "$FERNET_KEY"
+          create_if_missing "WEB_SECRET_KEY" "$WEB_SECRET_KEY"
+          create_if_missing "AIR_POSTGRES_PASSWORD" "$AIR_POSTGRES_PASSWORD"
+          create_if_missing "AIRFLOW_ADMIN_PASSWORD" "$AIRFLOW_ADMIN_PASSWORD"
+
+      ###################################################################
+      # HELM DEPLOY
+      ###################################################################
+      - name: Helm Deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXTRA_ARGS=()
+          if [ -n "${{ inputs.airflowImageRepository }}" ]; then
+            EXTRA_ARGS+=(--set airflow.image.repository="<<your specific value>>/${{ inputs.airflowImageRepository }}")
+          fi
+          if [ -n "${{ inputs.airflowImageTag }}" ]; then
+            EXTRA_ARGS+=(--set airflow.image.tag="${{ inputs.airflowImageTag }}")
+          fi
+          if [ -n "${{ inputs.postgresImageRepository }}" ]; then
+            EXTRA_ARGS+=(--set postgres.image.repository="<<your specific value>>/${{ inputs.postgresImageRepository }}")
+          fi
+          if [ -n "${{ inputs.postgresImageTag }}" ]; then
+            EXTRA_ARGS+=(--set postgres.image.tag="${{ inputs.postgresImageTag }}")
+          fi
+          if [ -n "${{ inputs.redisImageRepository }}" ]; then
+            EXTRA_ARGS+=(--set redis.image.repository="<<your specific value>>/${{ inputs.redisImageRepository }}")
+          fi
+          if [ -n "${{ inputs.redisImageTag }}" ]; then
+            EXTRA_ARGS+=(--set redis.image.tag="${{ inputs.redisImageTag }}")
+          fi
+
+          echo "===== HELM LINT ====="
+          helm lint "$HELM_DIR" -f "$VALUES_FILE" "${EXTRA_ARGS[@]}"
+
+          echo "===== DEPLOY TARGET ====="
+          echo "PARAMETERS_FILE=$PARAMETERS_FILE"
+          echo "RESOURCE_GROUP=${RESOURCE_GROUP:-}"
+          echo "AKS_CLUSTER=${AKS_CLUSTER:-}"
+          echo "NAMESPACE=$NAMESPACE"
+          echo "VALUES_FILE=$VALUES_FILE"
+
+          echo "===== HELM DEPLOY ====="
+          # dpn-airflow-init is a plain batch/v1 Job (not a Helm hook) — several
+          # of its spec fields are immutable once created, so a second `helm
+          # upgrade` fails to patch it in place. Delete only that Job before
+          # upgrading; everything else (including the LoadBalancer Service, so
+          # its NLB isn't torn down and recreated on every run) is left alone
+          # for helm upgrade --install to reconcile normally.
+          kubectl delete job dpn-airflow-init -n "$NAMESPACE" --ignore-not-found=true
+
+          helm upgrade --install "$RELEASE_NAME" "$HELM_DIR" \
+            -n "$NAMESPACE" \
+            -f "$VALUES_FILE" \
+            "${EXTRA_ARGS[@]}" \
+            --wait \
+            --timeout 15m \
+            --debug \
+            2>&1 | tee helm.log
+
+          echo "===== PVC STATUS ====="
+          kubectl get pvc -n "$NAMESPACE"
+
+          echo "===== POD STATUS ====="
+          kubectl get pods -n "$NAMESPACE" -o wide
+
+          echo "===== SERVICES ====="
+          kubectl get svc -n "$NAMESPACE"
+
+          echo "===== DEPLOYMENT COMPLETE ====="
+
+      ###################################################################
+      # DIAGNOSTICS ON FAILURE
+      ###################################################################
+      - name: Diagnostics On Failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "===== HELM STATUS ====="
+          helm status "$RELEASE_NAME" -n "$NAMESPACE" || true
+
+          echo "===== EVENTS ====="
+          kubectl get events \
+            -n "$NAMESPACE" \
+            --sort-by=.lastTimestamp | tail -100 || true
+
+          echo "===== PVC ====="
+          kubectl describe pvc dpn-airflow-postgres-pvc -n "$NAMESPACE" || true
+
+          echo "===== PODS ====="
+          kubectl get pods -n "$NAMESPACE"
+
+          for p in $(kubectl get pods -n "$NAMESPACE" -o name); do
+            echo "==============================="
+            echo "$p"
+            echo "==============================="
+            kubectl describe "$p" -n "$NAMESPACE" || true
+            kubectl logs "$p" -n "$NAMESPACE" --all-containers=true --tail=200 || true
+          done

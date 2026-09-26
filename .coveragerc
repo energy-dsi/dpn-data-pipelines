@@ -1,0 +1,13 @@
+[run]
+source =
+    blueprints
+    utils
+    dpn_observability_sdk
+
+[report]
+show_missing = True
+omit =
+    tests/*
+    consumer/*
+    producer/*
+    setup.py

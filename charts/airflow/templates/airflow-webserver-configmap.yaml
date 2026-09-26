@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dpn-airflow-webserver-config
+data:
+  webserver_config.py: |
+{{ .Files.Get "webserver_config.py" | indent 4 }}

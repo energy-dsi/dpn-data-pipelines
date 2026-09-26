@@ -1,0 +1,19 @@
+# Pipeline runtime deps installed into the Airflow worker image.
+# Keep in sync with requirements.txt (minus --find-links).
+# apache-airflow is already in the base image — do NOT add it here.
+
+boto3==1.42.79
+azure-storage-blob==12.28.0
+azure-identity==1.25.3
+google-cloud-storage==3.10.1
+
+kafka-python==2.3.2
+confluent-kafka==2.3.0
+schedule==1.2.2
+python-dotenv==1.2.2
+
+# Required by utils/kafka_truststore.py to read the common PKCS12 truststore.
+# Already present transitively via azure-identity's own wheel in
+# docker/airflow/packages; pinned explicitly here so it isn't lost if that
+# transitive dependency ever changes.
+cryptography==50.0.0

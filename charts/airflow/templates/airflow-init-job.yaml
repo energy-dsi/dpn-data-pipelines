@@ -1,0 +1,164 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dpn-airflow-init
+  labels:
+    app: dpn-airflow-init
+
+spec:
+  backoffLimit: 4
+
+  template:
+    metadata:
+      labels:
+        app: dpn-airflow-init
+
+    spec:
+      restartPolicy: OnFailure
+
+      containers:
+        - name: dpn-airflow-init
+
+          image: "{{ .Values.airflow.image.repository }}:{{ .Values.airflow.image.tag }}"
+          imagePullPolicy: {{ .Values.airflow.image.pullPolicy }}
+
+          command: ["/bin/bash", "-c"]
+
+          args:
+            - |
+              set -euo pipefail
+
+              echo "Waiting for Postgres to be ready..."
+
+              until pg_isready -h dpn-airflow-postgres -p 5432; do
+                echo "Waiting for postgres..."
+                sleep 5
+              done
+
+              echo "Postgres is ready"
+
+              echo "Running DB migration..."
+              airflow db migrate
+
+              echo "Creating admin user (if not exists)..."
+
+              airflow users create \
+                --username "${AIRFLOW_ADMIN_USER:-admin}" \
+                --password "${AIRFLOW_ADMIN_PASSWORD:?AIRFLOW_ADMIN_PASSWORD not set}" \
+                --firstname Admin \
+                --lastname User \
+                --role Admin \
+                --email admin@example.com || true
+
+              echo "Ensuring DagOperator custom role exists (trigger + enable/disable + task state, no delete, no Connections/Variables/Pools/Config access)..."
+
+              # `airflow roles export` deliberately excludes built-in roles
+              # (Viewer included) - it only ever dumps custom ones - so Viewer's
+              # live permission set has to come from `roles list -p` instead.
+              # Resource names are the plural FAB labels ("DAGs", "DAG Runs",
+              # "Task Instances"), and each row's "action" is a comma-joined
+              # string, not a list - both are exactly what this Airflow version's
+              # roles_list/roles_import commands actually use.
+              airflow roles list -p --output json > /tmp/all-roles.json
+
+              python3 - <<'PYEOF'
+              import json
+
+              with open("/tmp/all-roles.json") as f:
+                  all_roles = json.load(f)
+
+              viewer_perms = {}
+              for entry in all_roles:
+                  if entry["name"] == "Viewer":
+                      viewer_perms[entry["resource"]] = set(entry["action"].split(","))
+
+              # Everything Viewer can see, plus the actions Airflow bundles under
+              # can_edit on DAGs (trigger, pause/unpause, clear, mark state) and
+              # the matching DAG Runs / Task Instances grants so the same
+              # actions work from the Browse list views too. Deliberately no
+              # can_delete anywhere, and none of Op's Connections/Variables/
+              # Pools/Configuration access.
+              extra = {
+                  "DAGs": {"can_edit"},
+                  "DAG Runs": {"can_create", "can_edit"},
+                  "Task Instances": {"can_create", "can_edit"},
+              }
+              for resource, actions in extra.items():
+                  viewer_perms.setdefault(resource, set()).update(actions)
+
+              operator_rows = [
+                  {"name": "DagOperator", "resource": resource, "action": ",".join(sorted(actions))}
+                  for resource, actions in sorted(viewer_perms.items())
+              ]
+
+              with open("/tmp/dagoperator-role.json", "w") as f:
+                  json.dump(operator_rows, f)
+              PYEOF
+
+              # roles_import only acts on a role name it doesn't already find in
+              # the DB - once DagOperator exists, later redeploys are a no-op
+              # for it rather than resyncing permissions, so this only ever
+              # takes effect on the very first successful run.
+              airflow roles import /tmp/dagoperator-role.json
+              rm -f /tmp/all-roles.json /tmp/dagoperator-role.json
+
+              echo "DagOperator role ready"
+
+              echo "Airflow initialization complete"
+
+          envFrom:
+            - configMapRef:
+                name: dpn-airflow-config
+            - secretRef:
+                name: dpn-airflow-secrets
+
+          env:
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: "postgresql+psycopg2://{{ .Values.postgres.username }}:$(POSTGRES_PASSWORD)@dpn-airflow-postgres:5432/{{ .Values.postgres.db }}"
+
+            - name: AIRFLOW__CELERY__RESULT_BACKEND
+              value: "db+postgresql://{{ .Values.postgres.username }}:$(POSTGRES_PASSWORD)@dpn-airflow-postgres:5432/{{ .Values.postgres.db }}"
+
+            - name: AIRFLOW__CORE__FERNET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dpn-airflow-secrets
+                  key: FERNET_KEY
+
+            - name: AIRFLOW__WEBSERVER__SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dpn-airflow-secrets
+                  key: WEB_SECRET_KEY
+
+            - name: AIRFLOW__CELERY__BROKER_CONNECTION_RETRY_ON_STARTUP
+              value: "true"
+
+          volumeMounts:
+            - name: airflow-secrets-store
+              mountPath: /mnt/secrets
+              readOnly: true
+
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "200m"
+
+          securityContext:
+            runAsUser: 50000
+            runAsGroup: 50000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+
+      volumes:
+        - name: airflow-secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: dpn-airflow-kv-secrets
+
+      automountServiceAccountToken: false
