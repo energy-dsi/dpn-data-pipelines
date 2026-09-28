@@ -53,18 +53,12 @@ RUN apk upgrade --no-cache
 # Create non-root user
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
-# Runtime needs the python interpreter and the librdkafka shared lib only
-RUN apk add --no-cache \
-    python3 \
-    librdkafka
-
-# Alpine's python3 package installs pip via ensurepip even though py3-pip
-# is not explicitly listed here. The venv builder above already removed pip
-# from the venv (pip uninstall -y pip), but the system-level pip installed
-# under /usr/lib/python3.x/ by ensurepip persists and is detected by Xray
-# as CVE-2018-20225. Remove it from the system Python installation here —
-# it is not needed at runtime since the venv is self-contained.
-RUN python3 -m pip uninstall -y pip 2>/dev/null || true
+# Install runtime OS packages and immediately remove the system-level pip
+# installed by ensurepip in a SINGLE layer. Splitting this into two RUN
+# instructions would commit pip into an intermediate layer, which JFrog Xray
+# scans independently and would flag as CVE-2018-20225.
+RUN apk add --no-cache python3 librdkafka \
+ && python3 -m pip uninstall -y pip 2>/dev/null || true
 
 # Copy the pre-built virtual environment from the builder
 COPY --from=builder --chown=root:root --chmod=755 /extractor/venv /extractor/venv
