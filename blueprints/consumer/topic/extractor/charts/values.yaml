@@ -24,11 +24,15 @@ kafkaOauthSecretName: dpn-keycloak-secrets
 # still holds KC_SERVICE_CLIENT_SECRET, the Kafka OAuth client secret).
 tlsAuthSecretName: tls-auth-secret
 
-# No mapper topic any more — this container absorbed the old schema_mapper
-# entirely (see main.py's v2.0.0 changelog): each message's own target
-# topic is resolved dynamically from its producer-stamped headers and
-# produced to straight from here, no dp-consumer-topic-trfm relay.
+# No mapper/relay container any more — this container absorbed the old
+# schema_mapper entirely (see main.py's v2.0.0 changelog): each message's
+# own target topic is resolved dynamically from its producer-stamped
+# headers and produced straight from here. The 3-stage stage -> raw ->
+# target flow (main.py's v2.2.0 changelog) mirrors every message read from
+# srcTopicName unmodified to rawTopicName in that same cycle — still one
+# container, not a second relay process.
 srcTopicName: dp-consumer-topic-stage # Source topic consumed by extractor
+rawTopicName: dp-consumer-topic-raw # Fixed raw/audit topic, mirrored unmodified from srcTopicName
 srcGroupId: consumer-topic-extractor # Consumer group ID
 
 # ============================================================
