@@ -1,0 +1,35 @@
+# Local minikube overrides — see docs/MINIKUBE_DEPLOYMENT.md.
+# Merge with the chart's own values.yaml:
+#   helm upgrade --install dpn-consumer-topic-extractor \
+#     blueprints/consumer/topic/extractor/charts \
+#     -f blueprints/consumer/topic/extractor/charts/values-local-dpn01.yaml \
+#     -n ns-dpn-dp-01 --create-namespace
+
+# This chart's image template is "{{ .Values.acrName }}.azurecr.io/dsi/..."
+# (see templates/deployment.yaml) — it has no imageRegistry override at
+# all, so acrName is what needs to match the image built in Step 2 of
+# docs/MINIKUBE_DEPLOYMENT.md.
+namespace: ns-dpn-dp-01
+acrName: local
+imageTag: local
+# minikube's own Docker daemon has the image cached under this exact
+# tag (Step 2) - Always (this chart's hardcoded prior default) would try
+# to actually reach the fictitious registry hostname above and fail.
+imagePullPolicy: IfNotPresent
+
+# Consumers read from the TARGET cluster (dpn-kafka-target), the
+# shared/federated Kafka — matches service/compose.yaml's own
+# consumer-side convention and the producer/self-service side's use of
+# dpn-kafka-src. There is no plain "dpn-kafka" Deployment in this cluster.
+bootstrapServer: dpn-kafka-target.ns-dpn-dp-01.svc.cluster.local:9092
+KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+KAFKA_SASL_MECHANISM: ""
+KAFKA_OAUTH_CLIENT_ID: ""
+KAFKA_OAUTH_TOKEN_ENDPOINT_URL: ""
+kafkaTlsSecretName: ""
+
+OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-dp-01.svc.cluster.local:4318
+OTEL_EXPORTER_OTLP_INSECURE: true
+OTEL_OAUTH_DISABLED: true  # no Keycloak/oidc_auth locally (KAFKA_SASL_MECHANISM is empty above)
+
+ENVIRONMENT: local
