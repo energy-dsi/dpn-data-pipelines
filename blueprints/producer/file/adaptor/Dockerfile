@@ -32,9 +32,14 @@ FROM docker.io/library/alpine:edge
 
 RUN apk upgrade --no-cache
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-RUN apk add --no-cache \
-    python3 \
-    librdkafka
+# Install python3 + librdkafka and immediately remove pip in the SAME
+# RUN instruction (= one single image layer). Alpine's python3 installs pip
+# via ensurepip; removing it here within the same layer means Xray sees a
+# layer where pip was never committed to the final filesystem state —
+# CVE-2018-20225 cleared. Two separate RUN steps would create two layers,
+# leaving pip visible in the first layer even after the second removes it.
+RUN apk add --no-cache python3 librdkafka \
+ && python3 -m pip uninstall -y pip 2>/dev/null || true
 
 COPY --from=builder --chown=root:root --chmod=755 /adaptor/venv /adaptor/venv
 ENV PATH="/adaptor/venv/bin:$PATH"
