@@ -11,11 +11,8 @@
 # |         | topic, no mapperTopicName relay                          |               |             |
 # | 2.1.0   | Added --run-once so Run Now forces a window on demand;    | DSI Team      | 2026-09-24  |
 # |         | manual trigger now bounded by _TIMEOUT like kafka-trigger |               |             |
-# | 2.2.0   | 3-stage flow (stage -> raw -> target): every message read | DSI Team      | 2026-09-28  |
-# |         | from srcTopicName is now also mirrored unmodified to a   |               |             |
-# |         | fixed rawTopicName audit topic, in the same cycle as the |               |             |
-# |         | existing enrich-and-produce-to-target step (no separate  |               |             |
-# |         | relay container reintroduced)                            |               |             |
+# | 2.2.0   | Reverted the short-lived 3-stage stage -> raw -> target   | DSI Team      | 2026-09-30  |
+# |         | flow — back to 2-stage stage -> target (no rawTopicName) |               |             |
 # +---------+----------------------------------------------------------+---------------+-------------+
 
 """
@@ -23,19 +20,16 @@
 
 Kafka topic extractor (consumer).
 
-This service consumes messages from the source topic ("stage"), mirrors
-each one unmodified to a fixed raw/audit topic ("raw"), then stamps org/
-product/processedAt/offset headers and produces it straight to the
+This service consumes messages from the source topic, stamps org/product/
+processedAt/offset headers onto each one, and produces it straight to the
 per-product target topic (dpn-consumer-<org>-<product>-target) — resolved
 per message from the producer-side headers already on it (orgName/
 productType, stamped there by blueprints/producer/topic/adaptor/main.py).
-That's the 3-stage stage -> raw -> target flow.
 
-There is no separate schema_mapper/relay container — the extractor absorbed
-header-enrichment + dynamic target-topic-resolution entirely (mapperTopicName
-relay removed), the same way blueprints/producer/topic/adaptor/main.py
-absorbed its own schema mapper. The raw topic above is populated from within
-this same single container/cycle, not by a second process.
+There is no separate schema_mapper stage any more — the extractor absorbed
+its header-enrichment + dynamic target-topic-resolution logic entirely
+(mapperTopicName relay removed), the same way
+blueprints/producer/topic/adaptor/main.py absorbed its own schema mapper.
 
 Kubernetes Environment Variables:
     SCHEDULER_BACKEND=kafka-trigger
@@ -143,13 +137,6 @@ class TopicForwarder:
         self.group_id = os.getenv("srcGroupId", self.SERVICE_NAME)
         self.retry_delay = int(os.getenv("consumerRetryDelaySecs", "5"))
 
-        # Fixed raw/audit topic — every message read from src_topic
-        # ("stage") is mirrored here unmodified, in the same cycle as the
-        # existing enrich-and-produce-to-target step below. Unlike
-        # target_topic (resolved per message from headers), this is one
-        # well-known topic for the whole deployment, same as src_topic.
-        self.raw_topic = os.getenv("rawTopicName", "")
-
         # Resolved per message from headers — see _resolve_target(). Set
         # to "" whenever a message's metadata is invalid, which skips the
         # produce for that message entirely (no dpn-consumer-unknown-*
@@ -162,8 +149,6 @@ class TopicForwarder:
             logger=self.logger
         )
         self.km.ensure_exists(self.src_topic)
-        if self.raw_topic:
-            self.km.ensure_exists(self.raw_topic)
 
         # Kafka producer initialization
         self.producer = Producer(build_kafka_client_config(self.bootstrap))
@@ -172,7 +157,6 @@ class TopicForwarder:
             "extractor initialised",
             extra={
                 "srcTopicName": self.src_topic,
-                "rawTopicName": self.raw_topic,
                 "srcGroupId": self.group_id,
                 "PRODUCT_NAME": os.getenv("PRODUCT_NAME"),
                 "SCHEDULER_BACKEND": os.getenv("SCHEDULER_BACKEND"),
@@ -271,22 +255,6 @@ class TopicForwarder:
             )
 
             try:
-                # Mirror every message read from stage to the fixed raw/audit
-                # topic, unmodified (original key/value/headers) — this runs
-                # unconditionally, even for messages _resolve_target() below
-                # will end up skipping, since raw is meant to capture
-                # everything consumed from stage, not just what successfully
-                # resolves a target.
-                if self.raw_topic:
-                    self.producer.produce(
-                        topic=self.raw_topic,
-                        value=msg.value(),
-                        key=msg.key(),
-                        headers=list(msg.headers() or []),
-                        callback=self._on_delivery,
-                    )
-                    self.producer.poll(0)
-
                 self._resolve_target(carrier)
 
                 if not self.target_topic:
@@ -502,7 +470,6 @@ def run(ctx: PipelineContext) -> None:
             service_name="consumer-topic-extractor",
             config_summary={
                 "srcTopicName": forwarder.src_topic,
-                "rawTopicName": forwarder.raw_topic,
                 "SCHEDULER_BACKEND": os.getenv("SCHEDULER_BACKEND", "standalone"),
                 "PRODUCT_NAME": os.getenv("PRODUCT_NAME", "consumer-topic"),
             },

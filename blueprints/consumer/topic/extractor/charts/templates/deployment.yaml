@@ -56,9 +56,6 @@ spec:
           - name: "srcTopicName"
             value: {{ .Values.srcTopicName }}
 
-          - name: "rawTopicName"
-            value: {{ .Values.rawTopicName }}
-
           - name: "srcGroupId"
             value: {{ .Values.srcGroupId }}
 
