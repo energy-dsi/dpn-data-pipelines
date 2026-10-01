@@ -13,6 +13,9 @@
 # |         | manual trigger now bounded by _TIMEOUT like kafka-trigger |               |             |
 # | 2.2.0   | Reverted the short-lived 3-stage stage -> raw -> target   | DSI Team      | 2026-09-30  |
 # |         | flow — back to 2-stage stage -> target (no rawTopicName) |               |             |
+# | 2.3.0   | Bounded producer.flush() with producerFlushTimeoutSecs — | DSI Team      | 2026-10-01  |
+# |         | was unbounded, could hang the scheduler loop forever on  |               |             |
+# |         | an undelivered backlog                                   |               |             |
 # +---------+----------------------------------------------------------+---------------+-------------+
 
 """
@@ -136,6 +139,13 @@ class TopicForwarder:
         self.src_topic = os.getenv("srcTopicName", "")
         self.group_id = os.getenv("srcGroupId", self.SERVICE_NAME)
         self.retry_delay = int(os.getenv("consumerRetryDelaySecs", "5"))
+        # Bounds the producer.flush() call below — without it, flush()
+        # blocks forever on an undelivered backlog (e.g. a just-created
+        # dpn-consumer-*-target topic still propagating leader metadata),
+        # freezing IntervalBackend's single-threaded tick loop permanently:
+        # no further cycles ever run, and Run History stops advancing with
+        # no crash/restart to signal anything went wrong.
+        self.flush_timeout = int(os.getenv("producerFlushTimeoutSecs", "10"))
 
         # Resolved per message from headers — see _resolve_target(). Set
         # to "" whenever a message's metadata is invalid, which skips the
@@ -428,8 +438,20 @@ class TopicForwarder:
                     )
 
                 finally:
-                    # Ensure all buffered messages are sent
-                    self.producer.flush()
+                    # Ensure buffered messages are sent, but bounded — an
+                    # unreachable broker or a slow-to-propagate brand-new
+                    # target topic must not hang this call forever (see
+                    # self.flush_timeout's comment above).
+                    pending = self.producer.flush(self.flush_timeout)
+                    if pending:
+                        self.logger.warning(
+                            "Producer flush timed out with messages still undelivered",
+                            extra={
+                                "pending_messages": pending,
+                                "flush_timeout_secs": self.flush_timeout,
+                                "component.name": self.component_name,
+                            },
+                        )
 
                     # Close consumer cleanly
                     consumer.close()

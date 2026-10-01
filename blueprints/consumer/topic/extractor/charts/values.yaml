@@ -91,4 +91,11 @@ SERVICE_VERSION: 1.0.0               # Service version
 
 consumerRetryDelaySecs: 5
 
+# Bounds the per-cycle producer.flush() call (see main.py's _forward()/
+# run_window()) — without a bound, flush() blocks forever on an
+# undelivered backlog (e.g. a just-created dpn-consumer-*-target topic
+# still propagating leader metadata), freezing the extractor's single-
+# threaded scheduler loop permanently with no crash/restart to signal it.
+producerFlushTimeoutSecs: 10
+
 ENVIRONMENT: development
