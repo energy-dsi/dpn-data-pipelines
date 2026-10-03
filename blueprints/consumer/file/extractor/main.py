@@ -47,6 +47,11 @@ PRODUCT_NAME=consumer-file
 # | 2.2.0   | Added DEBUG_STORAGE_SDK opt-in for cloud SDK HTTP logging| DSI Team      | 2026-10-03  |
 # |         | — diagnoses why a single-file list/copy can take 10s of  |               |             |
 # |         | seconds (SDK retry/backoff on a transient failure)       |               |             |
+# | 2.3.0   | list_files() now fetches source+target metadata in one  | DSI Team      | 2026-10-03  |
+# |         | listing call per side (list_files_with_timestamps())     |               |             |
+# |         | and pre-filters to only-pending files; run() processes   |               |             |
+# |         | those concurrently (ThreadPoolExecutor) instead of one   |               |             |
+# |         | at a time — a 4-file cycle went from ~4 min to ~70s live |               |             |
 # +---------+----------------------------------------------------------+---------------+-------------+
 
 from __future__ import annotations
@@ -55,6 +60,8 @@ import base64
 import os
 import signal
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 # Cloud Exceptions
@@ -141,7 +148,13 @@ class ExtractorFileProcess:
 
         # Captures the per-file "process_file" span context so publish_event
         # can inject headers as a child of that span, not the pipeline span.
-        self._file_span_context: otel_context.Context | None = None
+        # threading.local(), not a plain attribute: run() now processes
+        # multiple files concurrently (see MAX_FILE_COPY_WORKERS below), and
+        # a shared instance attribute here would let one thread's context
+        # leak into another's in-flight publish_event() call, stamping the
+        # wrong file's Kafka message with the wrong trace parent. Each
+        # thread gets its own isolated .value instead.
+        self._file_span_context = threading.local()
 
         # ---------------------------------------------------------------------
         # Environment Configuration
@@ -257,18 +270,40 @@ class ExtractorFileProcess:
     @traced(span_name="list_files")
     def list_files(self):
         """
-        Retrieve list of files from the source container.
+        Discover files in the source container and which of them actually
+        need copying.
+
+        Fetches each side's full listing (name + last-modified) in ONE call
+        per side via DataTransection.list_files_with_timestamps() instead of
+        source_file_info() (names only) plus a separate per-file timestamp
+        lookup for every single file regardless of whether it changed —
+        confirmed live to cost 25-68s PER FILE on nothing more than a
+        single-blob container (see this file's v2.2.0 changelog entry and
+        DEBUG_STORAGE_SDK). That per-file cost now only applies to files
+        that actually turn out to need copying.
 
         Returns:
-            list: List of file names.
+            tuple[list[str], list[str]]: (every file name in the source
+            container, the subset of those that are new or updated since
+            whatever's already in the target).
         """
         with self.tracer.start_as_current_span("list_files") as span:
             span.set_attribute("storage.container", self.src_container)
             span.set_attribute("storage.provider", self.cloud_provider)
 
-            files = self.data_trans.source_file_info(
-                cloud_provider=self.cloud_provider
+            src_meta = self.data_trans.list_files_with_timestamps(
+                cloud_provider=self.cloud_provider, side="source"
             )
+            tgt_meta = self.data_trans.list_files_with_timestamps(
+                cloud_provider=self.cloud_provider, side="target"
+            )
+
+            files = list(src_meta.keys())
+            pending = [
+                name
+                for name, src_modified in src_meta.items()
+                if self._needs_copy(src_modified, tgt_meta.get(name))
+            ]
 
             self.files_discovered.add(len(files), {
                 "cloud_provider": self.cloud_provider,
@@ -276,12 +311,29 @@ class ExtractorFileProcess:
             })
 
             span.set_attribute("files.discovered", len(files))
+            span.set_attribute("files.pending", len(pending))
 
             self.logger.info(
                 "files discovered",
-                extra={"count": len(files), "component.name": self.component_name},
+                extra={
+                    "count": len(files),
+                    "pending": len(pending),
+                    "component.name": self.component_name,
+                },
             )
-            return files
+            return files, pending
+
+    @staticmethod
+    def _needs_copy(src_modified, tgt_modified) -> bool:
+        """Mirrors DataTransection._azure_copy_file()'s (and its S3/GCS
+        siblings') own gating rule exactly, so this pre-filter's decision
+        always agrees with what the real per-file copy would decide:
+        target already current only when it exists and is not older than
+        source. A missing src_modified defers to the real file_copy() call
+        rather than guessing — it already handles "source not found"."""
+        if src_modified is None:
+            return True
+        return tgt_modified is None or src_modified > tgt_modified
 
     @traced(span_name="process_file")
     def process_file(self, file):
@@ -336,7 +388,7 @@ class ExtractorFileProcess:
 
                 # Capture this span's context so publish_event() below can
                 # inject it as the parent trace context for the target span.
-                self._file_span_context = otel_context.get_current()
+                self._file_span_context.value = otel_context.get_current()
 
                 return result.copied
 
@@ -364,8 +416,9 @@ class ExtractorFileProcess:
             # process_file) so the injected trace header is a child of that
             # span rather than the coarser pipeline-level span.
             token = None
-            if self._file_span_context is not None:
-                token = otel_context.attach(self._file_span_context)
+            span_context = getattr(self._file_span_context, "value", None)
+            if span_context is not None:
+                token = otel_context.attach(span_context)
             try:
                 self.kafka_trans.send_message(
                     target_topic=self.kafka_topic,
@@ -404,6 +457,45 @@ def _provider(exc):
     if isinstance(exc, GoogleAPIError):
         return "GCP"
     return ""
+
+
+# Bounds run()'s per-cycle ThreadPoolExecutor — processing more files at once
+# than this just queues them instead of speeding anything further up, and
+# caps how many concurrent connections this pod opens against the storage
+# backend and Kafka at once.
+_MAX_FILE_COPY_WORKERS = int(os.getenv("FILE_COPY_MAX_WORKERS", "8"))
+
+
+def _copy_one(proc: "ExtractorFileProcess", file_name: str, parent_otel_context):
+    """
+    Run in a worker thread by run()'s ThreadPoolExecutor — does the actual
+    per-file work (copy + publish) only. Deliberately does NOT touch
+    step_log/exc_h itself: every StepLogger/HandleExceptions call for this
+    file happens back in run()'s own thread, in executor.map()'s submission
+    order, once this returns — so logging stays single-threaded and in the
+    same order it was in before this file's processing was parallelized,
+    even though the actual I/O now happens concurrently.
+
+    parent_otel_context is attached explicitly (the same attach()/detach()
+    pattern ExtractorFileProcess.publish_event() already uses, not
+    contextvars.copy_context().run()) so process_file()'s own span nests
+    under run()'s span instead of starting unparented. A plain
+    contextvars.Context snapshot cannot be reused this way: entering the
+    same Context object from two threads at once raises "cannot enter
+    context: ... is already entered" — confirmed by actually running this
+    concurrently, not just assumed. OTel's Context, unlike a raw
+    contextvars.Context, is an immutable value every thread can safely
+    attach() from at the same time.
+    """
+    token = otel_context.attach(parent_otel_context)
+    try:
+        ok = proc.process_file(file_name)
+        proc.publish_event(file_name, ok)
+        return file_name, ok, None
+    except Exception as exc:  # noqa: BLE001 - reported to the caller, not raised here
+        return file_name, None, exc
+    finally:
+        otel_context.detach(token)
 
 
 # =============================================================================
@@ -448,11 +540,11 @@ def run(ctx: PipelineContext) -> None:
         # -------------------------------------------------------------------------
         step_log.step_start(ctx, "list_files")
         try:
-            files = proc.list_files()
+            files, pending = proc.list_files()
             step_log.step_end(
                 ctx,
                 "list_files",
-                extra={"files_found": len(files)},
+                extra={"files_found": len(files), "files_pending": len(pending)},
             )
         except Exception as exc:
             span.set_attribute("pipeline.status", "error")
@@ -474,35 +566,56 @@ def run(ctx: PipelineContext) -> None:
             return
 
         # -------------------------------------------------------------------------
-        # Step 2: File Processing
+        # Step 2: File Processing — only files list_files() flagged as
+        # pending (new/updated) ever touch process_file(); everything else
+        # was already confirmed up-to-date from the single bulk listing
+        # above, with zero further per-file network calls.
         # -------------------------------------------------------------------------
         copied = 0
-        skipped = 0
+        skipped = len(files) - len(pending)
 
-        for f in files:
-            step_log.step_start(ctx, "process_file", extra={"file": f})
-            try:
-                ok = proc.process_file(f)
-                proc.publish_event(f, ok)
+        if pending:
+            for f in pending:
+                step_log.step_start(ctx, "process_file", extra={"file": f})
 
-                if ok:
-                    copied += 1
-                else:
-                    skipped += 1
-
-                step_log.step_end(
-                    ctx,
-                    "process_file",
-                    extra={"file": f, "ok": ok},
+            # Each process_file()/publish_event() call is I/O-bound (network
+            # round-trips to the cloud storage/Kafka APIs), so running them
+            # concurrently instead of one-at-a-time turns a cycle's total
+            # time from "sum of every file's latency" into "roughly the
+            # slowest single file's latency" — confirmed live: a 4-file
+            # cycle took ~4 minutes sequentially. executor.map() (not
+            # as_completed()) deliberately keeps results in the same order
+            # pending was submitted in, so step_end/step_failed logging
+            # below reads the same as the old sequential loop did.
+            # Captured once, in this thread, and reused (via attach()/
+            # detach() inside _copy_one, not contextvars.Context.run() —
+            # see that function's own docstring for why) so each worker's
+            # process_file() span still nests under this function's own
+            # span instead of starting an unparented one.
+            parent_otel_context = otel_context.get_current()
+            max_workers = min(len(pending), _MAX_FILE_COPY_WORKERS)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results = executor.map(
+                    lambda f: _copy_one(proc, f, parent_otel_context), pending
                 )
-            except Exception as exc:
-                step_log.step_failed(
-                    ctx,
-                    "process_file",
-                    exc=exc,
-                    extra={"file": f},
-                )
-                exc_h.handle_storage_exception(exc, _provider(exc))
+                for f, ok, exc in results:
+                    if exc is not None:
+                        step_log.step_failed(
+                            ctx, "process_file", exc=exc, extra={"file": f}
+                        )
+                        exc_h.handle_storage_exception(exc, _provider(exc))
+                        continue
+
+                    if ok:
+                        copied += 1
+                    else:
+                        skipped += 1
+
+                    step_log.step_end(
+                        ctx,
+                        "process_file",
+                        extra={"file": f, "ok": ok},
+                    )
 
         # -------------------------------------------------------------------------
         # Pipeline Completion
