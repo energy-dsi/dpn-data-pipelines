@@ -44,6 +44,9 @@ PRODUCT_NAME=consumer-file
 # | 1.2.0   | OTEL Collector Integration                               | DSI Team      | 2026-06-26  |
 # | 2.0.0   | Absorbed schema_mapper — single container, direct copy   | DSI Team      | 2026-09-15  |
 # | 2.1.0   | Added --run-once so Run Now forces a cycle               | DSI Team      | 2026-09-24  |
+# | 2.2.0   | Added DEBUG_STORAGE_SDK opt-in for cloud SDK HTTP logging| DSI Team      | 2026-10-03  |
+# |         | — diagnoses why a single-file list/copy can take 10s of  |               |             |
+# |         | seconds (SDK retry/backoff on a transient failure)       |               |             |
 # +---------+----------------------------------------------------------+---------------+-------------+
 
 from __future__ import annotations
@@ -223,6 +226,13 @@ class ExtractorFileProcess:
             gcp_project_id=self.gcp_project_id,
             logger=self.logger,
             component_name=self.component_name,
+            # Off by default. Flip DEBUG_STORAGE_SDK=true on the Deployment
+            # and trigger one Run Now to capture the cloud SDK's own
+            # per-request HTTP logging — the way to actually see why a
+            # single-file list/copy is taking tens of seconds (default SDK
+            # retry/backoff absorbing a transient failure) rather than
+            # guessing from duration_ms alone.
+            debug_logging=os.getenv("DEBUG_STORAGE_SDK", "").strip().lower() in ("1", "true", "yes"),
         )
 
         # Ensure both containers exist before anything tries to read/write
