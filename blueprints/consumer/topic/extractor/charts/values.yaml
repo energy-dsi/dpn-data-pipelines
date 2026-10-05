@@ -54,16 +54,28 @@ HEARTBEAT_INTERVAL_SECONDS: 60
 # (or any other orchestrator) publishing to PIPELINE_CONTROL_TOPIC, so
 # kafka-trigger left this pod waiting forever for a trigger that never
 # comes — "automatic" mode never actually ran a cycle. IntervalBackend
-# self-ticks every scheduleInterval seconds instead, same as every
-# self-service-created producer data product already does (see
-# service/env_builder.py).
+# self-ticks every scheduleInterval seconds instead.
 SCHEDULER_BACKEND: interval # Execution backend (interval — no Airflow in this deployment)
 # Starting default only — the self-service UI's Pause/Resume toggle (see
 # service/consumers.py) patches this Deployment's actual EXECUTION_MODE
 # in place at runtime, independent of this chart value.
 EXECUTION_MODE: automatic
 
-scheduleInterval: 240 # Execution interval (seconds, only for interval mode)
+# Matches TOPIC_TASK_TIMEOUT_SECS below, and matches every self-service-
+# created topic-pathway producer's effective cadence (service/env_builder.py's
+# topic_adaptor_env() never overrides scheduleInterval at all, leaving
+# IntervalBackend's own 60s default — see utils/scheduler_backend.py).
+# This chart previously hardcoded 240 here, independent of the 60s window
+# below: since run_window() already blocks for TOPIC_TASK_TIMEOUT_SECS
+# before returning, and the `schedule` library computes each tick as
+# last_run + scheduleInterval (not "N seconds after the job returns"), a
+# scheduleInterval bigger than the window leaves a real idle gap after
+# every window with nothing consuming (confirmed live: a 240/60 split
+# produced only a ~20% duty cycle — 60s active out of every 300s). Setting
+# it equal to the window means each tick's scheduled time has already
+# elapsed by the time the job returns, so the next window starts
+# immediately instead of waiting out the rest of a 240s timer.
+scheduleInterval: 60 # Execution interval (seconds, only for interval mode)
 replicaCount: 1 # Number of pod replicas
 
 # ============================================================
@@ -90,5 +102,12 @@ SERVICE_NAME: dpn data pipeline          # Service name for observability
 SERVICE_VERSION: 1.0.0               # Service version
 
 consumerRetryDelaySecs: 5
+
+# Bounds the per-cycle producer.flush() call (see main.py's _forward()/
+# run_window()) — without a bound, flush() blocks forever on an
+# undelivered backlog (e.g. a just-created dpn-consumer-*-target topic
+# still propagating leader metadata), freezing the extractor's single-
+# threaded scheduler loop permanently with no crash/restart to signal it.
+producerFlushTimeoutSecs: 10
 
 ENVIRONMENT: development

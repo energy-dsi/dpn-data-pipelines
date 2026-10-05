@@ -110,6 +110,9 @@ spec:
           - name: "consumerRetryDelaySecs"
             value: {{ .Values.consumerRetryDelaySecs | quote }}
 
+          - name: "producerFlushTimeoutSecs"
+            value: {{ .Values.producerFlushTimeoutSecs | quote }}
+
           - name: "OTEL_EXPORTER_OTLP_ENDPOINT"
             value: {{ .Values.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
           

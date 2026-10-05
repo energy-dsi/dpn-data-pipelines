@@ -35,6 +35,12 @@ srcGroupId: producer-topic-adaptor-example-product
 consumerRetryDelaySecs: 5
 TOPIC_TASK_TIMEOUT_SECS: 60
 
+# Bounds the per-cycle producer.flush() call (see main.py's _forward()/
+# run_window()) — without a bound, flush() blocks forever on an
+# undelivered backlog, freezing the adaptor's single-threaded scheduler
+# loop permanently with no crash/restart to signal it.
+producerFlushTimeoutSecs: 10
+
 SCHEDULER_BACKEND: interval
 EXECUTION_MODE: automatic
 replicaCount: 1

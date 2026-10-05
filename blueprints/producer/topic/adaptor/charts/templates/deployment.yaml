@@ -71,6 +71,8 @@ spec:
               value: {{ .Values.srcGroupId | quote }}
             - name: "consumerRetryDelaySecs"
               value: {{ .Values.consumerRetryDelaySecs | quote }}
+            - name: "producerFlushTimeoutSecs"
+              value: {{ .Values.producerFlushTimeoutSecs | quote }}
             - name: "TOPIC_TASK_TIMEOUT_SECS"
               value: {{ .Values.TOPIC_TASK_TIMEOUT_SECS | quote }}
             - name: "orgName"

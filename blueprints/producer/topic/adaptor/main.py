@@ -24,6 +24,9 @@
 # |         | topic in one hop.                                        |               |             |
 # | 3.1.0   | targetTopicName now a real user-provided override (not  | DSI Team      | 2026-09-14  |
 # |         | always self-computed) — see self-service review screen.  |               |             |
+# | 3.2.0   | Bounded producer.flush() with producerFlushTimeoutSecs — | DSI Team      | 2026-10-01  |
+# |         | was unbounded, could hang the scheduler loop forever on  |               |             |
+# |         | an undelivered backlog                                   |               |             |
 # +---------+----------------------------------------------------------+---------------+-------------+
 
 """
@@ -183,6 +186,11 @@ class TopicForwarder:
         self.src_topic = os.getenv("srcTopicName", "")
         self.group_id = os.getenv("srcGroupId", self.component_name)
         self.retry_delay = int(os.getenv("consumerRetryDelaySecs", "5"))
+        # Bounds the producer.flush() call below — without it, flush()
+        # blocks forever on an undelivered backlog, freezing
+        # IntervalBackend's single-threaded tick loop permanently: no
+        # further cycles ever run, with no crash/restart to signal it.
+        self.flush_timeout = int(os.getenv("producerFlushTimeoutSecs", "10"))
 
         # Metadata (ENV-driven, supports fallback) — absorbed from the
         # removed schema mapper, which used these to compute the target
@@ -419,8 +427,19 @@ class TopicForwarder:
                     )
 
                 finally:
-                    # Ensure resources are flushed and closed
-                    self.producer.flush()
+                    # Ensure resources are flushed and closed — bounded,
+                    # so an unreachable broker can't hang this forever
+                    # (see self.flush_timeout's comment above).
+                    pending = self.producer.flush(self.flush_timeout)
+                    if pending:
+                        self.logger.warning(
+                            "Producer flush timed out with messages still undelivered",
+                            extra={
+                                "pending_messages": pending,
+                                "flush_timeout_secs": self.flush_timeout,
+                                **ctx.as_log_extra(),
+                            },
+                        )
                     consumer.close()
 
                 if deadline and time.monotonic() >= deadline:

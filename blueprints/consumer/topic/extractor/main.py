@@ -13,6 +13,14 @@
 # |         | manual trigger now bounded by _TIMEOUT like kafka-trigger |               |             |
 # | 2.2.0   | Reverted the short-lived 3-stage stage -> raw -> target   | DSI Team      | 2026-09-30  |
 # |         | flow — back to 2-stage stage -> target (no rawTopicName) |               |             |
+# | 2.3.0   | Bounded producer.flush() with producerFlushTimeoutSecs — | DSI Team      | 2026-10-01  |
+# |         | was unbounded, could hang the scheduler loop forever on  |               |             |
+# |         | an undelivered backlog                                   |               |             |
+# | 2.4.0   | Wired up DRAIN_IDLE_SECS (chart already carried it, never| DSI Team      | 2026-10-02  |
+# |         | read here) — a bounded window now ends once the topic   |               |             |
+# |         | goes quiet instead of always blocking for the full       |               |             |
+# |         | TOPIC_TASK_TIMEOUT_SECS; fixes "Run Now" waiting out the |               |             |
+# |         | whole window after its one message was already forwarded|               |             |
 # +---------+----------------------------------------------------------+---------------+-------------+
 
 """
@@ -65,6 +73,14 @@ load_dotenv()
 
 # Timeout used when running in triggered mode
 _TIMEOUT = int(os.getenv("TOPIC_TASK_TIMEOUT_SECS", "600"))
+
+# Exit a bounded window early once the topic has been quiet for this long,
+# instead of always blocking for the full _TIMEOUT regardless of activity —
+# same knob the chart already carries (values.yaml's DRAIN_IDLE_SECS) but,
+# until now, never actually read here. Matters most for a manual "Run Now":
+# without this, clicking it waits out the full TOPIC_TASK_TIMEOUT_SECS even
+# when the only queued message was forwarded in the first second.
+_DRAIN_IDLE_SECS = int(os.getenv("DRAIN_IDLE_SECS", "15"))
 
 
 def _sanitize(value: str | None, default: str = "unknown") -> str:
@@ -136,6 +152,13 @@ class TopicForwarder:
         self.src_topic = os.getenv("srcTopicName", "")
         self.group_id = os.getenv("srcGroupId", self.SERVICE_NAME)
         self.retry_delay = int(os.getenv("consumerRetryDelaySecs", "5"))
+        # Bounds the producer.flush() call below — without it, flush()
+        # blocks forever on an undelivered backlog (e.g. a just-created
+        # dpn-consumer-*-target topic still propagating leader metadata),
+        # freezing IntervalBackend's single-threaded tick loop permanently:
+        # no further cycles ever run, and Run History stops advancing with
+        # no crash/restart to signal anything went wrong.
+        self.flush_timeout = int(os.getenv("producerFlushTimeoutSecs", "10"))
 
         # Resolved per message from headers — see _resolve_target(). Set
         # to "" whenever a message's metadata is invalid, which skips the
@@ -375,6 +398,11 @@ class TopicForwarder:
 
                 consumer.subscribe([self.src_topic])
 
+                # Reset per session: "idle" means no message since this
+                # consumer (re)started, not since the window itself began.
+                last_message_time = time.monotonic()
+                idle_exit = False
+
                 try:
                     while True:
                         if deadline and time.monotonic() >= deadline:
@@ -384,6 +412,23 @@ class TopicForwarder:
 
                         # No message received
                         if msg is None:
+                            if deadline and (time.monotonic() - last_message_time) >= _DRAIN_IDLE_SECS:
+                                # Bounded run (interval/kafka-trigger/manual)
+                                # gone quiet for DRAIN_IDLE_SECS — drained,
+                                # nothing left to wait for. A "standalone"
+                                # continuous run (deadline is None) never
+                                # takes this path, same as it never takes
+                                # the deadline check above.
+                                idle_exit = True
+                                self.logger.info(
+                                    "Topic drained — idle for %ds, ending window early",
+                                    _DRAIN_IDLE_SECS,
+                                    extra={
+                                        "messages_processed": messages_processed,
+                                        "component.name": self.component_name,
+                                    },
+                                )
+                                break
                             continue
 
                         # Handle Kafka error messages
@@ -402,6 +447,7 @@ class TopicForwarder:
 
                         # Resolve, enrich and forward the message
                         self._forward(msg, ctx, step_log)
+                        last_message_time = time.monotonic()
 
                 except KafkaException as kafka_error:
                     span.set_attribute("error.type", "kafka_error")
@@ -428,14 +474,29 @@ class TopicForwarder:
                     )
 
                 finally:
-                    # Ensure all buffered messages are sent
-                    self.producer.flush()
+                    # Ensure buffered messages are sent, but bounded — an
+                    # unreachable broker or a slow-to-propagate brand-new
+                    # target topic must not hang this call forever (see
+                    # self.flush_timeout's comment above).
+                    pending = self.producer.flush(self.flush_timeout)
+                    if pending:
+                        self.logger.warning(
+                            "Producer flush timed out with messages still undelivered",
+                            extra={
+                                "pending_messages": pending,
+                                "flush_timeout_secs": self.flush_timeout,
+                                "component.name": self.component_name,
+                            },
+                        )
 
                     # Close consumer cleanly
                     consumer.close()
 
-                # Exit if deadline reached after cleanup
-                if deadline and time.monotonic() >= deadline:
+                # Exit if deadline reached after cleanup, or if this session
+                # ended because the topic drained (idle_exit) — either way
+                # there is nothing left to wait for, so don't sleep
+                # retry_delay and spin up yet another consumer first.
+                if idle_exit or (deadline and time.monotonic() >= deadline):
                     break
 
                 # Retry delay before restarting consumer loop
