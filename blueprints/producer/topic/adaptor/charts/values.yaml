@@ -4,7 +4,7 @@
 
 namespace: ns-dpn-dp-01
 name: producer-topic-adaptor-example
-acrName: ""
+imageRegistry: ""
 imageName: dpn-producer-topic-adaptor-generic
 imageTag: latest
 

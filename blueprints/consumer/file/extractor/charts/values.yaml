@@ -1,7 +1,7 @@
 namespace: ns-dpn-01
 name: dpn-consumer-file-extractor
 cloudProviderType: azure
-acrName: ""
+imageRegistry: ""
 imageName: consumer-file-extractor
 imageTag: ""
 bootstrapServer: dpn-kafka-target.ns-dpn-01.svc.cluster.local:9092
