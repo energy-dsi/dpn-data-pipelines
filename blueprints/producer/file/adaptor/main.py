@@ -18,13 +18,7 @@
 # | 1.0.0   | Initial version                                          | DSI Team      | 2026-05-01  |
 # | 1.1.0   | Airflow Integration Release                              | DSI Team      | 2026-06-27  |
 # | 1.2.0   | OTEL Collector Integration                               | DSI Team      | 2026-06-27  |
-# | 2.0.0   | Genericised — one image for every schema type/product    | DSI Team      | 2026-08-30  |
-# | 3.0.0   | Schema mapper absorbed into adaptor — no mapper           | DSI Team      | 2026-09-14  |
-# |         | container/topic; adaptor reads source and writes         |               |             |
-# |         | straight to target in one hop.                           |               |             |
-# | 3.1.0   | Removed the org-prefixed rename entirely — a file lands  | DSI Team      | 2026-09-15  |
-# |         | in the target container under the exact name it arrived  |               |             |
-# |         | with, no exceptions.                                     |               |             |
+# | 2.0.0   | Simplified data pipeline implementation                  | DSI Team      | 2026-10-11  |
 # +---------+----------------------------------------------------------+---------------+-------------+
 """
 File Adaptor (Producer) - Generic Data Product Runtime.
