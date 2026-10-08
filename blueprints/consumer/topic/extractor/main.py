@@ -6,21 +6,7 @@
 # | 1.0.0   | Initial version                                          | DSI Team      | 2026-05-01  |
 # | 1.1.0   | Kafka Trigger and StepLogger Integration                 | DSI Team      | 2026-05-26  |
 # | 1.2.0   | OTEL Collector Integration                               | DSI Team      | 2026-06-26  |
-# | 2.0.0   | Absorbed schema_mapper — consumes srcTopicName, resolves  | DSI Team      | 2026-09-15  |
-# |         | + enriches + produces straight to the per-product target |               |             |
-# |         | topic, no mapperTopicName relay                          |               |             |
-# | 2.1.0   | Added --run-once so Run Now forces a window on demand;    | DSI Team      | 2026-09-24  |
-# |         | manual trigger now bounded by _TIMEOUT like kafka-trigger |               |             |
-# | 2.2.0   | Reverted the short-lived 3-stage stage -> raw -> target   | DSI Team      | 2026-09-30  |
-# |         | flow — back to 2-stage stage -> target (no rawTopicName) |               |             |
-# | 2.3.0   | Bounded producer.flush() with producerFlushTimeoutSecs — | DSI Team      | 2026-10-01  |
-# |         | was unbounded, could hang the scheduler loop forever on  |               |             |
-# |         | an undelivered backlog                                   |               |             |
-# | 2.4.0   | Wired up DRAIN_IDLE_SECS (chart already carried it, never| DSI Team      | 2026-10-02  |
-# |         | read here) — a bounded window now ends once the topic   |               |             |
-# |         | goes quiet instead of always blocking for the full       |               |             |
-# |         | TOPIC_TASK_TIMEOUT_SECS; fixes "Run Now" waiting out the |               |             |
-# |         | whole window after its one message was already forwarded|               |             |
+# | 2.0.0   | Simplified data pipeline implementation                  | DSI Team      | 2026-10-11  |
 # +---------+----------------------------------------------------------+---------------+-------------+
 
 """

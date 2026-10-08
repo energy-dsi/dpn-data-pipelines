@@ -18,7 +18,7 @@ spec:
       restartPolicy: Always
       containers:
         - name: {{ .Values.name }}
-          image: "{{ .Values.acrName }}.azurecr.io/dsi/{{ .Values.imageName }}:{{ .Values.imageTag }}"
+          image: "{{ .Values.imageRegistry }}/{{ .Values.imageName }}:{{ .Values.imageTag }}"
           imagePullPolicy: IfNotPresent
           resources:
             requests:

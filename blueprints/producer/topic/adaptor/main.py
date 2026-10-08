@@ -18,15 +18,7 @@
 # | 1.0.0   | Initial version                                          | DSI Team      | 2026-05-01  |
 # | 1.1.0   | Kafka Trigger and StepLogger Integration                 | DSI Team      | 2026-05-26  |
 # | 1.2.0   | OTEL Collector Integration                               | DSI Team      | 2026-06-26  |
-# | 2.0.0   | Genericised — one image for every schema type/product    | DSI Team      | 2026-08-30  |
-# | 3.0.0   | Schema mapper absorbed into adaptor — no mapper topic;   | DSI Team      | 2026-09-14  |
-# |         | adaptor enriches and produces straight to the target     |               |             |
-# |         | topic in one hop.                                        |               |             |
-# | 3.1.0   | targetTopicName now a real user-provided override (not  | DSI Team      | 2026-09-14  |
-# |         | always self-computed) — see self-service review screen.  |               |             |
-# | 3.2.0   | Bounded producer.flush() with producerFlushTimeoutSecs — | DSI Team      | 2026-10-01  |
-# |         | was unbounded, could hang the scheduler loop forever on  |               |             |
-# |         | an undelivered backlog                                   |               |             |
+# | 2.0.0   | Simplified data pipeline implementation                  | DSI Team      | 2026-10-11  |
 # +---------+----------------------------------------------------------+---------------+-------------+
 
 """

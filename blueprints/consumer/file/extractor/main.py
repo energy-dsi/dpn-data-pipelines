@@ -42,16 +42,7 @@ PRODUCT_NAME=consumer-file
 # | 1.0.0   | Initial version                                          | DSI Team      | 2026-05-01  |
 # | 1.1.0   | Kafka Trigger and StepLogger Integration                 | DSI Team      | 2026-05-26  |
 # | 1.2.0   | OTEL Collector Integration                               | DSI Team      | 2026-06-26  |
-# | 2.0.0   | Absorbed schema_mapper — single container, direct copy   | DSI Team      | 2026-09-15  |
-# | 2.1.0   | Added --run-once so Run Now forces a cycle               | DSI Team      | 2026-09-24  |
-# | 2.2.0   | Added DEBUG_STORAGE_SDK opt-in for cloud SDK HTTP logging| DSI Team      | 2026-10-03  |
-# |         | — diagnoses why a single-file list/copy can take 10s of  |               |             |
-# |         | seconds (SDK retry/backoff on a transient failure)       |               |             |
-# | 2.3.0   | list_files() now fetches source+target metadata in one  | DSI Team      | 2026-10-03  |
-# |         | listing call per side (list_files_with_timestamps())     |               |             |
-# |         | and pre-filters to only-pending files; run() processes   |               |             |
-# |         | those concurrently (ThreadPoolExecutor) instead of one   |               |             |
-# |         | at a time — a 4-file cycle went from ~4 min to ~70s live |               |             |
+# | 2.0.0   | Simplified data pipeline implementation                  | DSI Team      | 2026-10-11  |
 # +---------+----------------------------------------------------------+---------------+-------------+
 
 from __future__ import annotations

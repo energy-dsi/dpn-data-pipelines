@@ -36,7 +36,9 @@ srcGroupId: consumer-topic-extractor # Consumer group ID
 # ============================================================
 namespace: ns-dpn-01 # Kubernetes namespace
 name: dpn-consumer-topic-extractor # Service/deployment name
-imageName: consumer-topic-extractor # Container image name
+imageRegistry: "" # Full registry path, e.g. <acr>.azurecr.io/dsi — set at deploy time
+imageName: dpn-consumer-topic-extractor # Container image name (as pushed by dpn-self-service-ci)
+imageTag: "" # Set at deploy time
 
 # ============================================================
 # Pipeline Configuration

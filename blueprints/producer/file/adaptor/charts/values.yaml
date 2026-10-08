@@ -14,7 +14,7 @@
 namespace: ns-dpn-dp-01
 name: producer-file-adaptor-example
 cloudProviderType: azure
-acrName: ""
+imageRegistry: ""
 imageName: dpn-producer-file-adaptor-generic
 imageTag: latest
 

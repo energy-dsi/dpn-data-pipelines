@@ -20,7 +20,7 @@ spec:
         - name: {{ .Values.name }}
           # No per-product tag suffix: this is the generic image — one
           # image serves every data product on this pathway.
-          image: "{{ .Values.acrName }}.azurecr.io/dsi/{{ .Values.imageName }}:{{ .Values.imageTag }}"
+          image: "{{ .Values.imageRegistry }}/{{ .Values.imageName }}:{{ .Values.imageTag }}"
           imagePullPolicy: IfNotPresent
           resources:
             requests:
