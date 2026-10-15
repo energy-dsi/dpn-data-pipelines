@@ -23,26 +23,22 @@ WORKDIR /extractor
 
 # Copy dependencies
 COPY requirements.txt .
-COPY packages ./packages
 COPY utils ./utils
 COPY dpn_observability_sdk ./dpn_observability_sdk
 COPY setup.py .
 
-# Air-gapped install: --no-index forces resolution from ./packages only, so a
-# missing/incompatible wheel fails the build loudly instead of silently reaching
-# for PyPI (which is unreachable here anyway).
+# Dependencies resolved from PyPI at build time (see requirements.txt).
 # NOTE: install the local package NON-editable (no `-e`). An editable install
 # points back at the source tree (/extractor/utils, ...), which is NOT copied
 # into the runtime stage — only the venv is — so `import utils` would fail at
 # runtime. A regular install bakes utils/ + dpn_observability_sdk/ into the
 # venv's site-packages, making the copied venv self-contained.
-RUN pip install --no-cache-dir --no-index --find-links packages -r requirements.txt \
- && pip install --no-cache-dir --no-index --find-links packages . \
+RUN pip install --no-cache-dir -r requirements.txt \
+ && pip install --no-cache-dir . \
  && pip uninstall -y pip
 # ^ pip removed from the venv: it is not needed at runtime and carries its own
 #   CVEs (e.g. CVE-2026-8643). Removing it needs no network. If you instead need
-#   pip at runtime, drop the `pip uninstall` line and add a patched
-#   pip wheel (pip>=26.1.2) to ./packages so the venv upgrade stays offline.
+#   pip at runtime, drop the `pip uninstall` line (pip>=26.1.2 pulled from PyPI).
 
 # ---------- runtime stage ----------
 # Ships only the interpreter and the librdkafka *shared* library.
@@ -57,10 +53,12 @@ RUN apk upgrade --no-cache
 # Create non-root user
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
-# Runtime needs the python interpreter and the librdkafka shared lib only
-RUN apk add --no-cache \
-    python3 \
-    librdkafka
+# Install runtime OS packages and immediately remove the system-level pip
+# installed by ensurepip in a SINGLE layer. Splitting this into two RUN
+# instructions would commit pip into an intermediate layer, which JFrog Xray
+# scans independently and would flag as CVE-2018-20225.
+RUN apk add --no-cache python3 librdkafka \
+ && python3 -m pip uninstall -y pip 2>/dev/null || true
 
 # Copy the pre-built virtual environment from the builder
 COPY --from=builder --chown=root:root --chmod=755 /extractor/venv /extractor/venv
@@ -69,7 +67,7 @@ ENV PATH="/extractor/venv/bin:$PATH"
 WORKDIR /extractor
 
 # Copy application code
-COPY --chown=root:root --chmod=755 consumer/topic/extractor/main.py .
+COPY --chown=root:root --chmod=755 blueprints/consumer/topic/extractor/main.py .
 
 USER appuser
 

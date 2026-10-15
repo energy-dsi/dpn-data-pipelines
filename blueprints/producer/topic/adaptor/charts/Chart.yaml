@@ -1,0 +1,6 @@
+apiVersion: v2
+name: producer-topic-adaptor
+description: >
+  Generic producer topic-pathway adaptor. One chart, one image, deployed
+  once per data product — see docs/AKS_DEPLOYMENT.md.
+version: 1.0.0

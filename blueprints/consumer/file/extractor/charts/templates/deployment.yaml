@@ -17,15 +17,19 @@ spec:
       restartPolicy: Always
       containers:
         - name: {{ .Values.name }}
-          #image: "{{ .Values.acrName }}.azurecr.io/dsi/{{ .Values.imageName }}:{{ .Values.imageTag }}"
           image: "{{ .Values.imageRegistry }}/{{ .Values.imageName }}:{{ .Values.imageTag }}"
-          imagePullPolicy: Always
+          imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
           resources:
             requests:
               memory: "256Mi"
               cpu: "100m"
             limits:
-              memory: "256Mi"
+              # 512Mi, not 256Mi: limit == request left zero burst headroom,
+              # and this pod was observed OOMKilled (exit 137) twice in ~30
+              # minutes even while idle between kafka-trigger cycles — let
+              # alone once it's actually doing list_files()/file_copy() work
+              # every interval tick.
+              memory: "512Mi"
               cpu: "200m"
           securityContext:
             allowPrivilegeEscalation: false
@@ -42,17 +46,14 @@ spec:
             value: {{ .Values.scheduleInterval | quote }}
           - name: "cloudProviderType"
             value: {{ .Values.cloudProviderType }}
-          - name: "mapperTopicName"
-            value: {{ .Values.mapperTopicName }}
           - name: "srcConnectionString"
             valueFrom:
               secretKeyRef:
                 name: {{ .Values.storageConnectionSecret }}
                 key: SRC_CONNECTION_STRING
+                optional: true
           - name: "srcContainerName"
             value: {{ .Values.srcContainerName }}
-          - name: "mapperContainerName"
-            value: {{ .Values.mapperContainerName }}
           - name: "bootstrapServer"
             value: {{ .Values.bootstrapServer }}
           - name: "KAFKA_SECURITY_PROTOCOL"
@@ -64,38 +65,42 @@ spec:
           - name: "KAFKA_OAUTH_CLIENT_SECRET"
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.kafkaOauthSecretName | default "kafka-secrets" }}
-                key: KAFKA_OAUTH_CLIENT_SECRET
+                name: {{ .Values.kafkaOauthSecretName | default "dpn-keycloak-secrets" }}
+                key: KC_SERVICE_CLIENT_SECRET
           - name: "KAFKA_OAUTH_TOKEN_ENDPOINT_URL"
             value: {{ .Values.KAFKA_OAUTH_TOKEN_ENDPOINT_URL }}
-          - name: "mapperConnectionString"
-            valueFrom:
-              secretKeyRef:
-                name: {{ .Values.storageConnectionSecret }}
-                key: MAPPER_CONNECTION_STRING
           - name: "targetConnectionString"
             valueFrom:
               secretKeyRef:
                 name: {{ .Values.storageConnectionSecret }}
                 key: TARGET_CONNECTION_STRING
+                optional: true
           - name: "targetTopicName"
             value: {{ .Values.targetTopicName }}
           - name: "targetContainerName"
             value: {{ .Values.targetContainerName }}
           - name: "AWS_ENDPOINT_URL"
-            value: {{ .Values.awsEndpointUrl }}
+            valueFrom:
+              configMapKeyRef:
+                name: {{ .Values.name }}-aws-config
+                key: AWS_ENDPOINT_URL
           - name: "AWS_REGION"
-            value: {{ .Values.awsRegion }}
+            valueFrom:
+              configMapKeyRef:
+                name: {{ .Values.name }}-aws-config
+                key: AWS_REGION
           - name: "AWS_ACCESS_KEY_ID"
             valueFrom:
               secretKeyRef:
                 name: {{ .Values.awsAccessSecret }}
                 key: AWS_ACCESS_KEY_ID
+                optional: true
           - name: "AWS_SECRET_ACCESS_KEY"
             valueFrom:
               secretKeyRef:
                 name: {{ .Values.awsAccessSecret }}
                 key: AWS_SECRET_ACCESS_KEY
+                optional: true
                 
           - name: "SCHEDULER_BACKEND"
             value: {{ .Values.SCHEDULER_BACKEND | quote }}
@@ -135,12 +140,23 @@ spec:
           
           - name: "OTEL_EXPORTER_OTLP_INSECURE"
             value: {{ .Values.OTEL_EXPORTER_OTLP_INSECURE | quote }}
-          
+
+          - name: "OTEL_OAUTH_DISABLED"
+            value: {{ .Values.OTEL_OAUTH_DISABLED | quote }}
+
+          - name: "HEARTBEAT_INTERVAL_SECONDS"
+            value: {{ .Values.HEARTBEAT_INTERVAL_SECONDS | quote }}
+
           - name: "TRUSTSTORE_PASSWORD"
             valueFrom:
               secretKeyRef:
-                name: tls-auth-secret
+                name: {{ .Values.tlsAuthSecretName | default "tls-auth-secret" }}
                 key: TRUSTSTORE_PASSWORD
+          - name: "KEYSTORE_PASSWORD"
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.tlsAuthSecretName | default "tls-auth-secret" }}
+                key: KEYSTORE_PASSWORD
           
           - name: "ENVIRONMENT"
             value: {{ .Values.ENVIRONMENT }}
@@ -150,6 +166,10 @@ spec:
             - name: dpn-tls
               mountPath: /etc/secrets/truststore.jks
               subPath: truststore.jks
+              readOnly: true
+            - name: dpn-tls
+              mountPath: /etc/secrets/keystore.jks
+              subPath: keystore.jks
               readOnly: true
 
       volumes:

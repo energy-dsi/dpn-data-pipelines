@@ -17,8 +17,8 @@ spec:
       restartPolicy: Always
       containers:
         - name: {{ .Values.name }}
-          image: "{{ .Values.acrName }}.azurecr.io/dsi/{{ .Values.imageName }}:{{ .Values.imageTag }}"
-          imagePullPolicy: Always
+          image: "{{ .Values.imageRegistry }}/{{ .Values.imageName }}:{{ .Values.imageTag }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
           resources:
             requests:
               memory: "128Mi"
@@ -48,16 +48,13 @@ spec:
           - name: "KAFKA_OAUTH_CLIENT_SECRET"
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.kafkaOauthSecretName | default "kafka-secrets" }}
-                key: KAFKA_OAUTH_CLIENT_SECRET
+                name: {{ .Values.kafkaOauthSecretName | default "dpn-keycloak-secrets" }}
+                key: KC_SERVICE_CLIENT_SECRET
           - name: "KAFKA_OAUTH_TOKEN_ENDPOINT_URL"
             value: {{ .Values.KAFKA_OAUTH_TOKEN_ENDPOINT_URL }}
 
           - name: "srcTopicName"
             value: {{ .Values.srcTopicName }}
-
-          - name: "mapperTopicName"
-            value: {{ .Values.mapperTopicName | default "" | quote }}
 
           - name: "srcGroupId"
             value: {{ .Values.srcGroupId }}
@@ -113,17 +110,31 @@ spec:
           - name: "consumerRetryDelaySecs"
             value: {{ .Values.consumerRetryDelaySecs | quote }}
 
+          - name: "producerFlushTimeoutSecs"
+            value: {{ .Values.producerFlushTimeoutSecs | quote }}
+
           - name: "OTEL_EXPORTER_OTLP_ENDPOINT"
             value: {{ .Values.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
           
           - name: "OTEL_EXPORTER_OTLP_INSECURE"
             value: {{ .Values.OTEL_EXPORTER_OTLP_INSECURE | quote }}
-          
+
+          - name: "OTEL_OAUTH_DISABLED"
+            value: {{ .Values.OTEL_OAUTH_DISABLED | quote }}
+
+          - name: "HEARTBEAT_INTERVAL_SECONDS"
+            value: {{ .Values.HEARTBEAT_INTERVAL_SECONDS | quote }}
+
           - name: "TRUSTSTORE_PASSWORD"
             valueFrom:
               secretKeyRef:
-                name: tls-auth-secret
+                name: {{ .Values.tlsAuthSecretName | default "tls-auth-secret" }}
                 key: TRUSTSTORE_PASSWORD
+          - name: "KEYSTORE_PASSWORD"
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.tlsAuthSecretName | default "tls-auth-secret" }}
+                key: KEYSTORE_PASSWORD
           
           - name: "ENVIRONMENT"
             value: {{ .Values.ENVIRONMENT }}
@@ -132,6 +143,10 @@ spec:
             - name: dpn-tls
               mountPath: /etc/secrets/truststore.jks
               subPath: truststore.jks
+              readOnly: true
+            - name: dpn-tls
+              mountPath: /etc/secrets/keystore.jks
+              subPath: keystore.jks
               readOnly: true
 
       volumes:

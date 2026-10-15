@@ -1,20 +1,15 @@
-# apiVersion: v1
-# kind: ConfigMap
-# metadata:
-#   name: {{ .Values.configname }}
-#   namespace: {{ .Values.namespace }}
-#   labels:
-#     app: {{ .Values.name }}
-#     app.kubernetes.io/managed-by: Helm
-#     meta.helm.sh/release-name: {{ .Values.name }}
-#     meta.helm.sh/release-namespace: {{ .Values.namespace }}
-# data:
-#   PRODUCER_NAME: {{ .Values.producer_name }}
-#   SOURCE_NAME: {{ .Values.source_name }}
-#   BOOTSTRAP_SERVERS: {{ .Values.bootstrap_servers }}
-#   TARGET_TOPIC: {{ .Values.target_topic }}
-#   STORAGE_ACCOUNT_URL: {{ .Values.storage_account_url }}
-#   CONTAINER_NAME: {{ .Values.container_name }}
-#   BLOB_NAME: {{ .Values.blob_name }}
-# #  ENV: {{ .Values.env }}
-# #  NAME: {{ .Values.name }}
+# Env-specific storage settings that legitimately vary per environment
+# (region, S3-compatible endpoint) — kept in a ConfigMap rather than as
+# literal Deployment env values so an operator can `kubectl edit configmap
+# {{ .Values.name }}-aws-config` (or patch it via CI) and restart the pod
+# to pick up a new region/endpoint, without a full `helm upgrade`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.name }}-aws-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ .Values.name }}
+data:
+  AWS_REGION: {{ .Values.awsRegion | quote }}
+  AWS_ENDPOINT_URL: {{ .Values.awsEndpointUrl | quote }}

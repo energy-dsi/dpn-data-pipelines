@@ -1,4 +1,0 @@
-apiVersion: v2
-name: producer-topic-adaptor
-description: Helm chart for the DPN Producer Topic Adaptor (streaming pathway).
-version: 0.0.1

@@ -1,0 +1,94 @@
+# Reference/manual-deploy values for the generic producer file adaptor.
+#
+# In normal operation, a data product's adaptor Deployment is created
+# dynamically by the self-service UI (service/k8s_ops.py) when someone
+# creates a data product through the UI — not by `helm install` per product.
+# This chart exists for manual/reference deployment (e.g. testing a single
+# instance outside the self-service flow) and is the template k8s_ops.py's
+# generated Deployment spec mirrors.
+#
+# One image serves every data product — see blueprints/producer/file/adaptor/.
+# Per-product identity (productType, PRODUCT_NAME, container/topic names)
+# is supplied via --set at install time, or a values-<product>.yaml.
+
+namespace: ns-dpn-dp-01
+name: producer-file-adaptor-example
+cloudProviderType: azure
+imageRegistry: ""
+imageName: dpn-producer-file-adaptor-generic
+imageTag: latest
+
+bootstrapServer: dpn-kafka-src.ns-dpn-01.svc.cluster.local:9092
+KAFKA_SECURITY_PROTOCOL: SASL_SSL
+KAFKA_SASL_MECHANISM: OAUTHBEARER
+KAFKA_OAUTH_CLIENT_ID: dpn-service-client
+KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
+
+kafkaTlsSecretName: dpn-tls
+kafkaOauthSecretName: dpn-keycloak-secrets
+# TRUSTSTORE_PASSWORD/KEYSTORE_PASSWORD for dpn-tls's truststore.jks/
+# keystore.jks — a separate secret from kafkaOauthSecretName above (which
+# still holds KC_SERVICE_CLIENT_SECRET, the Kafka OAuth client secret).
+tlsAuthSecretName: tls-auth-secret
+
+productType: example-product
+PRODUCT_NAME: example-product
+orgName: example-org
+
+srcContainerName: example-product-stage
+storageConnectionSecret: producer-file-dp-secret
+targetContainerName: example-product-target
+targetTopicName: dpn-producer-example-product-target
+scheduleInterval: 60
+
+# ------- AWS Config (used when cloudProviderType: aws) ------------
+# Populates the {{ .Values.name }}-aws-config ConfigMap (templates/
+# configmap.yaml) rather than being baked into the Deployment as literal
+# env values — an operator can edit that ConfigMap + restart the pod to
+# change region/endpoint per environment without a helm upgrade.
+awsEndpointUrl: ""
+awsRegion: eu-west-2
+awsAccessSecret: aws-access-secret
+
+SCHEDULER_BACKEND: interval
+EXECUTION_MODE: automatic
+replicaCount: 1
+
+PIPELINE_CONTROL_TOPIC: dpn-pipeline-control
+PIPELINE_STATUS_TOPIC: dpn-pipeline-status
+
+STATSD_HOST: ""
+STATSD_PORT: 8125
+
+SERVICE_NAME: dpn data pipeline
+SERVICE_VERSION: 1.0.0
+
+OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4318
+OTEL_EXPORTER_OTLP_INSECURE: false
+OTEL_OAUTH_DISABLED: false  # set true to skip OAuth in dev/test
+ENVIRONMENT: production
+
+# HPA is disabled by default: SCHEDULER_BACKEND=interval means each replica
+# self-schedules its own poll loop with no work-partitioning between
+# replicas, so scaling beyond 1 risks duplicate processing. Only enable
+# this after moving to SCHEDULER_BACKEND=kafka-trigger (Kafka consumer
+# groups then partition work safely across replicas).
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  scaleUp:
+    cpuUtilization: 80
+    memoryUtilization: 80
+  scaleUpBehavior:
+    stabilizationWindowSeconds: 60
+    policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 60
+  scaleDown:
+    stabilizationWindowSeconds: 300
+    policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
