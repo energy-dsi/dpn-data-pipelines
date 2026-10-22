@@ -2,7 +2,7 @@
 # Full toolchain lives here ONLY. confluent-kafka compiles a C extension
 # against librdkafka at install time, which needs gcc/python3-dev/librdkafka-dev.
 # None of this is copied into the final image.
-FROM docker.io/library/alpine:edge AS builder
+FROM docker.io/library/alpine:20260805 AS builder
 
 # Install Python + build deps (NO VERSION PINNING)
 # Alpine base is edge (rolling); provides Python 3.14, NOT version-pinned.
@@ -44,7 +44,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
 # Ships only the interpreter and the librdkafka *shared* library.
 # Drops binutils / python3-dev / gcc / g++ / build-base entirely,
 # clearing CVE-2026-6846 and the python3-dev component of CVE-2026-7210.
-FROM docker.io/library/alpine:edge
+FROM docker.io/library/alpine:20260805
 
 # Pull in any published security patches for base packages (e.g. the
 # pyc / python3-pycache-pyc0 component of CVE-2026-7210 once Alpine ships a fix).
