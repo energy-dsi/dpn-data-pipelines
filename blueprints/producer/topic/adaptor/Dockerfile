@@ -2,7 +2,7 @@
 # Full toolchain lives here ONLY. confluent-kafka compiles a C extension
 # against librdkafka at install time, which needs gcc/python3-dev/librdkafka-dev.
 # None of this is copied into the final image.
-FROM docker.io/library/alpine:edge AS builder
+FROM docker.io/library/alpine:20260805 AS builder
 
 RUN apk add --no-cache \
     python3 \
@@ -28,7 +28,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
  && pip uninstall -y pip
 
 # ---------- runtime stage ----------
-FROM docker.io/library/alpine:edge
+FROM docker.io/library/alpine:20260805
 
 RUN apk upgrade --no-cache
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
