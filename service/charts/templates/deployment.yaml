@@ -1,0 +1,189 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  replicas: {{ .Values.replicaCount | default 1 }}
+  # Recreate, not the default RollingUpdate: the PVC below is ReadWriteOnce
+  # (Azure Disk, single-writer). RollingUpdate would try to start a second
+  # pod before killing the first, which can never mount the still-attached
+  # disk — a deadlock that just times out the rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: {{ .Values.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.name }}
+    spec:
+      serviceAccountName: {{ .Values.name }}
+      securityContext:
+        fsGroup: 10000
+      {{- if .Values.imagePullSecretName }}
+      # Only needed for a private registry the node/kubelet has no other
+      # pull credentials for — e.g. GHCR. Unneeded (and left unset) for ACR
+      # on AKS, which nodes already pull from via their managed identity.
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecretName }}
+      {{- end }}
+      containers:
+        - name: {{ .Values.name }}
+          # See consumer/file/extractor/charts/templates/deployment.yaml's
+          # matching line for the imageRegistry/ACR-default rationale — the
+          # AWS EKS pipeline sets imageRegistry to <<your specific value>>; the
+          # Azure pipeline never sets it, so this renders exactly as before.
+          image: "{{ .Values.imageRegistry | default (printf "%<<CONTAINER_REGISTRY_URL>>/dsi" .Values.acrName) }}/{{ .Values.imageName }}:{{ .Values.imageTag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: {{ .Values.servicePort }}
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+            runAsUser: 10000
+            runAsNonRoot: true
+          env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            - name: "DPN_AWS_REGION"
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Values.name }}-aws-config
+                  key: DPN_AWS_REGION
+            - name: "DPN_AWS_ENDPOINT_URL"
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Values.name }}-aws-config
+                  key: DPN_AWS_ENDPOINT_URL
+            - name: "DPN_KAFKA_OAUTH_CLIENT_SECRET"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.kafkaOauthSecretName | default "dpn-keycloak-secrets" }}
+                  key: KC_SERVICE_CLIENT_SECRET
+                  optional: true
+            # Forwarded into every dynamically-launched producer pod's own
+            # TRUSTSTORE_PASSWORD/KEYSTORE_PASSWORD by service/env_builder.py's
+            # common_env() — same tls-auth-secret Secret, same keys the
+            # static blueprint charts read directly via their own secretKeyRef.
+            - name: "DPN_TRUSTSTORE_PASSWORD"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.tlsAuthSecretName | default "tls-auth-secret" }}
+                  key: TRUSTSTORE_PASSWORD
+                  optional: true
+            - name: "DPN_KEYSTORE_PASSWORD"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.tlsAuthSecretName | default "tls-auth-secret" }}
+                  key: KEYSTORE_PASSWORD
+                  optional: true
+            # Platform cloud storage credentials (FR-D-016m-06) — see
+            # platformStorageSecretName's comment in values.yaml for which
+            # key(s) actually need to exist for DPN_CLOUD_PROVIDER above.
+            - name: "DPN_AWS_ACCESS_KEY_ID"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.platformStorageSecretName | default "dpn-platform-storage" }}
+                  key: AWS_ACCESS_KEY_ID
+                  optional: true
+            - name: "DPN_AWS_SECRET_ACCESS_KEY"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.platformStorageSecretName | default "dpn-platform-storage" }}
+                  key: AWS_SECRET_ACCESS_KEY
+                  optional: true
+            - name: "DPN_AZURE_SRC_CONNECTION_STRING"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.platformStorageSecretName | default "producer-file-dp-secret" }}
+                  key: SRC_CONNECTION_STRING
+                  optional: true
+            - name: "DPN_AZURE_TARGET_CONNECTION_STRING"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.platformStorageSecretName | default "producer-file-dp-secret" }}
+                  key: TARGET_CONNECTION_STRING
+                  optional: true
+            - name: "DPN_GCP_SERVICE_ACCOUNT_KEY"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.platformStorageSecretName | default "dpn-platform-storage" }}
+                  key: GCP_SERVICE_ACCOUNT_KEY
+                  optional: true
+            - name: "DPN_GCP_PROJECT_ID"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.platformStorageSecretName | default "dpn-platform-storage" }}
+                  key: GCP_PROJECT_ID
+                  optional: true
+            {{- if .Values.oauth2Proxy.enabled }}
+            # Read by service/auth.py's logout_url() to chain
+            # /oauth2/sign_out through Keycloak's real end-session endpoint —
+            # see that module's docstring for why sign_out alone isn't
+            # enough. Mirrors app/dpn-portal/main.py's KEYCLOAK_PUBLIC_URL /
+            # KEYCLOAK_REALM / PORTAL_EXTERNAL_URL exactly.
+            - name: KEYCLOAK_PUBLIC_URL
+              value: {{ .Values.oauth2Proxy.keycloak.publicUrl | quote }}
+            - name: KEYCLOAK_REALM
+              value: {{ .Values.oauth2Proxy.keycloak.realm | quote }}
+            - name: KEYCLOAK_CLIENT_ID
+              value: {{ .Values.oauth2Proxy.keycloak.clientId | quote }}
+            - name: SELF_SERVICE_EXTERNAL_URL
+              value: {{ include "self-service.oauth2ProxyExternalUrl" . | quote }}
+            # Tells service/auth.py's request_is_authenticated() that
+            # oauth2-proxy is guaranteed to be the only path into this pod, so
+            # ui/app.py's require_proxy_auth middleware can reject any request
+            # missing its identity headers (e.g. a kubectl port-forward
+            # straight to the pod/ClusterIP, bypassing oauth2-proxy and the
+            # external LB entirely) instead of treating it as fully open.
+            - name: DPN_REQUIRE_PROXY_AUTH
+              value: "true"
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /app/service/data
+            - name: dpn-tls
+              mountPath: /etc/secrets/truststore.jks
+              subPath: truststore.jks
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.servicePort }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.servicePort }}
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.name }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: dpn-tls
+          secret:
+            secretName: {{ .Values.kafkaTlsSecretName | default "dpn-tls" }}
+      automountServiceAccountToken: true

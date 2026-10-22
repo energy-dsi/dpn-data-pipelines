@@ -1,0 +1,59 @@
+# Grants the self-service ServiceAccount permission to create/patch/delete
+# the adaptor/schema_mapper Deployments it manages (service/k8s_ops.py)
+# and read their pods' logs, scoped to Values.producerNamespace only —
+# never cluster-wide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.name }}-producer-manager
+  namespace: {{ .Values.producerNamespace }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/status"]
+    verbs: ["get"]
+  # service/k8s_ops.py's launch()/stop() manage one HorizontalPodAutoscaler
+  # per product alongside its Deployment (pinned at minReplicas=maxReplicas=1
+  # — see _hpa_spec()'s own docstring for why it never actually scales).
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # "Run Now" (service/k8s_ops.py's run_once(), via
+  # connect_get_namespaced_pod_exec) execs `python main.py --run-once`
+  # inside the adaptor/schema_mapper pod. Without this, the exec request
+  # itself is rejected with a 403 on pods/exec before it ever reaches the
+  # pod — get/list on pods and get on pods/log above don't cover it.
+  #
+  # Both verbs are needed, not just "create": the K8s API server derives
+  # the RBAC verb it checks from the actual HTTP method of the exec
+  # request, not from which client library made it. `kubectl exec` (SPDY,
+  # a POST) needs "create"; the kubernetes Python client's stream()
+  # (a WebSocket-upgraded GET, per k8s_ops.py's traceback showing
+  # ws_client.py's websocket_call) needs "get" — confirmed by the 403's
+  # own wording, "cannot **get** resource pods/exec", when only "create"
+  # was granted.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.name }}-producer-manager
+  namespace: {{ .Values.producerNamespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.name }}
+    namespace: {{ .Values.namespace }}
+roleRef:
+  kind: Role
+  name: {{ .Values.name }}-producer-manager
+  apiGroup: rbac.authorization.k8s.io

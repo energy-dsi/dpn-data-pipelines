@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% from "_icons.html" import error as error_icon %}
+
+{% block title %}Something went wrong{% endblock %}
+
+{% block content %}
+  <div class="dpn-page-header">
+    <span class="dpn-page-header__icon dpn-page-header__icon--danger">{{ error_icon() }}</span>
+    <div>
+      <h1>Something went wrong</h1>
+      <p>{{ exc_type }}{% if exc_message %}: {{ exc_message }}{% endif %}</p>
+    </div>
+  </div>
+
+  {% if traceback %}
+  <h2 class="dpn-subpage-title">Traceback</h2>
+  <div class="dpn-log-panel"><pre>{{ traceback }}</pre></div>
+  {% endif %}
+{% endblock %}

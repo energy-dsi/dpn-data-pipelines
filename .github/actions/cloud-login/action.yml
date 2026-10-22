@@ -1,0 +1,243 @@
+name: Cloud Login
+description: >
+  Authenticate to the selected cloud provider and leave a working, current
+  kubectl context pointed at the target cluster, plus kubectl/helm on PATH.
+  Must run in the same job as the steps that use that context -- a separate
+  workflow_call job would lose it.
+
+  azure/RESOURCE_GROUP, AKS_CLUSTER, ARM_SUBSCRIPTION_ID are still read from
+  GITHUB_ENV (a prior "Read Deployment Config" step), since the Azure steps
+  below are plain shell-bash runs that inherit the job's environment
+  directly. AWS and GCP values (aws-region, aws-account-id, eks-cluster,
+  gcp-project-id, gcp-region, gke-cluster, gcp-workload-identity-provider,
+  gcp-service-account) must instead be passed explicitly as inputs to this
+  action: composite-action steps resolve the env expression context against
+  this composite's OWN env, not the calling job's GITHUB_ENV, so reading
+  those values that way here would silently resolve to empty and fail the
+  AWS action's required-input check.
+
+inputs:
+  cloud:
+    description: "Target cloud provider: azure, aws, or gcp"
+    required: true
+  azure-client-id:
+    description: "Azure federated identity client ID (azure only)"
+    required: false
+    default: ''
+  azure-tenant-id:
+    description: "Azure AD tenant ID (azure only)"
+    required: false
+    default: ''
+  aws-region:
+    description: >
+      AWS region (aws only). Must be passed explicitly -- composite action
+      steps do not resolve the env expression context against the calling
+      job's GITHUB_ENV, only against env set inside this composite itself,
+      so reading it that way here would silently evaluate to empty.
+    required: false
+    default: ''
+  aws-account-id:
+    description: "Target AWS account ID (aws only) — same caveat as aws-region."
+    required: false
+    default: ''
+  eks-cluster:
+    description: "Target EKS cluster name (aws only) — same caveat as aws-region."
+    required: false
+    default: ''
+  gcp-project-id:
+    description: "GCP project ID (gcp only) — same caveat as aws-region."
+    required: false
+    default: ''
+  gcp-region:
+    description: "GCP region (gcp only) — same caveat as aws-region."
+    required: false
+    default: ''
+  gke-cluster:
+    description: "Target GKE cluster name (gcp only) — same caveat as aws-region."
+    required: false
+    default: ''
+  gcp-workload-identity-provider:
+    description: "GCP Workload Identity Provider (gcp only) — same caveat as aws-region."
+    required: false
+    default: ''
+  gcp-service-account:
+    description: "GCP service account email (gcp only) — same caveat as aws-region."
+    required: false
+    default: ''
+
+runs:
+  using: "composite"
+  steps:
+    # =================================================================
+    # AZURE
+    # =================================================================
+    - name: Azure Login (OIDC)
+      if: inputs.cloud == 'azure'
+      shell: bash
+      env:
+        AZURE_CLIENT_ID: ${{ inputs.azure-client-id }}
+        AZURE_TENANT_ID: ${{ inputs.azure-tenant-id }}
+      run: |
+        set -euo pipefail
+
+        OIDC_TOKEN=$(curl -sS \
+          -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" \
+          | jq -r '.value')
+
+        az login \
+          --service-principal \
+          --username "$AZURE_CLIENT_ID" \
+          --tenant "$AZURE_TENANT_ID" \
+          --federated-token "$OIDC_TOKEN"
+
+        az account set --subscription "$ARM_SUBSCRIPTION_ID"
+        az account show
+
+    - name: Setup kubectl (azure)
+      if: inputs.cloud == 'azure'
+      uses: azure/setup-kubectl@v4
+      with:
+        version: 'v1.32.4'
+
+    - name: Setup kubelogin (azure)
+      if: inputs.cloud == 'azure'
+      uses: Azure/use-kubelogin@v1
+      with:
+        kubelogin-version: 'v0.1.4'
+
+    - name: Setup Helm (azure)
+      if: inputs.cloud == 'azure'
+      uses: azure/setup-helm@v4
+      with:
+        version: 'v3.17.3'
+
+    - name: AKS Context
+      if: inputs.cloud == 'azure'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        az aks get-credentials \
+          --resource-group "$RESOURCE_GROUP" \
+          --name "$AKS_CLUSTER" \
+          --overwrite-existing
+
+        kubelogin convert-kubeconfig -l azurecli
+
+        kubectl get ns >/dev/null
+        echo "AKS context ready"
+
+    # =================================================================
+    # AWS
+    # =================================================================
+    # Two-step OIDC assume per the org's reference pattern: the runner's
+    # OIDC token first assumes a fixed hub role, then chains into the
+    # target AWS account's admin role. Mirrors the working pattern in
+    # dpn-cd-data-pipelines-aws-poc.yml.
+    - name: Configure AWS credentials (OIDC bootstrap role)
+      if: inputs.cloud == 'aws'
+      uses: aws-actions/configure-aws-credentials@v6
+      with:
+        role-to-assume: <<your specific value>>
+        role-session-name: gha-oidc-bootstrap
+        aws-region: ${{ inputs.aws-region }}
+
+    - name: Assume target account role
+      if: inputs.cloud == 'aws'
+      uses: aws-actions/configure-aws-credentials@v6
+      with:
+        role-chaining: true
+        role-to-assume: arn:aws:iam::${{ inputs.aws-account-id }}:role/oidc_github_runner_admin
+        role-session-name: gha-target-account
+        aws-region: ${{ inputs.aws-region }}
+
+    - name: Ensure AWS CLI is installed
+      if: inputs.cloud == 'aws'
+      shell: bash
+      run: |
+        set -euo pipefail
+        export PATH="$HOME/.local/bin:$PATH"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        if command -v aws >/dev/null 2>&1; then
+          aws --version
+          exit 0
+        fi
+        curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+        unzip -q awscliv2.zip
+        ./aws/install --bin-dir "$HOME/.local/bin" --install-dir "$HOME/.aws-cli" --update
+
+    - name: Setup kubectl (aws)
+      if: inputs.cloud == 'aws'
+      uses: azure/setup-kubectl@v4
+      with:
+        version: 'v1.32.4'
+
+    - name: Setup Helm (aws)
+      if: inputs.cloud == 'aws'
+      uses: azure/setup-helm@v4
+      with:
+        version: 'v3.17.3'
+
+    - name: EKS Context
+      if: inputs.cloud == 'aws'
+      shell: bash
+      env:
+        AWS_REGION_INPUT: ${{ inputs.aws-region }}
+        EKS_CLUSTER_INPUT: ${{ inputs.eks-cluster }}
+      run: |
+        set -euo pipefail
+
+        aws sts get-caller-identity
+        aws eks update-kubeconfig \
+          --region "$AWS_REGION_INPUT" \
+          --name "$EKS_CLUSTER_INPUT"
+
+        kubectl get ns >/dev/null
+        echo "EKS context ready"
+
+    # =================================================================
+    # GCP
+    # =================================================================
+    # Standard Workload Identity Federation pattern -- unexercised, since
+    # no GCP project/cluster has been onboarded for any DPN service yet.
+    # WORKLOAD_IDENTITY_PROVIDER and GCP_SERVICE_ACCOUNT come from the
+    # per-environment gcp/ config (still TODO placeholders today).
+    - name: GCP Login (OIDC / Workload Identity Federation)
+      if: inputs.cloud == 'gcp'
+      uses: google-github-actions/auth@v2
+      with:
+        project_id: ${{ inputs.gcp-project-id }}
+        workload_identity_provider: ${{ inputs.gcp-workload-identity-provider }}
+        service_account: ${{ inputs.gcp-service-account }}
+
+    - name: Setup gcloud CLI
+      if: inputs.cloud == 'gcp'
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Setup kubectl (gcp)
+      if: inputs.cloud == 'gcp'
+      uses: azure/setup-kubectl@v4
+      with:
+        version: 'v1.32.4'
+
+    - name: Setup Helm (gcp)
+      if: inputs.cloud == 'gcp'
+      uses: azure/setup-helm@v4
+      with:
+        version: 'v3.17.3'
+
+    - name: GKE Context
+      if: inputs.cloud == 'gcp'
+      uses: google-github-actions/get-gke-credentials@v2
+      with:
+        cluster_name: ${{ inputs.gke-cluster }}
+        location: ${{ inputs.gcp-region }}
+
+    - name: Verify GKE Context
+      if: inputs.cloud == 'gcp'
+      shell: bash
+      run: |
+        set -euo pipefail
+        kubectl get ns >/dev/null
+        echo "GKE context ready"

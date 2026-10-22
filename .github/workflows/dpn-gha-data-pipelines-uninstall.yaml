@@ -1,0 +1,169 @@
+name: DPN Uninstall - Data Pipelines
+
+# Matches the real ADO dsi-data-pipelines-uninstall-cd.yaml: tick any
+# combination of producer/consumer/airflow (at least one required). Producer
+# and consumer releases are discovered dynamically (helm list, filtered by
+# name prefix) since they're created per product, not fixed. dpn-airflow is
+# a fixed release name — note charts/airflow/ was removed from this repo
+# ("Simplify pipeline architecture and add self-service RBAC/multi-cloud
+# support"), so this option only matters for uninstalling a release deployed
+# before that change; nothing can redeploy it afterwards.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select Environment"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - test
+
+      cluster:
+        description: "Target DPN Cluster"
+        required: true
+        default: "dpn01"
+        type: choice
+        options:
+          - dpn01
+          - dpn02
+
+      cloud:
+        description: "Target Cloud Provider"
+        required: true
+        default: "aws"
+        type: choice
+        options:
+          - azure
+          - aws
+
+      uninstallProducer:
+        description: "Uninstall producer release(s)"
+        required: true
+        default: false
+        type: boolean
+
+      uninstallConsumer:
+        description: "Uninstall consumer release(s)"
+        required: true
+        default: false
+        type: boolean
+
+      uninstallAirflow:
+        description: "Uninstall airflow (dpn-airflow) — legacy release, chart no longer exists in this repo"
+        required: true
+        default: false
+        type: boolean
+
+      confirm:
+        description: 'Type "confirm" to proceed'
+        required: true
+        type: string
+
+env:
+  PARAMETERS_FILE: .github/config/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.json
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  uninstall:
+    name: Helm Uninstall - Data Pipelines
+    runs-on: [self-hosted, vmss]
+    environment: ${{ inputs.environment }}-${{ inputs.cluster }}
+    steps:
+      - name: Validate Confirmation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.confirm }}" != "confirm" ]]; then
+            echo "ERROR: confirmation text '${{ inputs.confirm }}' does not match 'confirm'."
+            exit 1
+          fi
+          if [[ "${{ inputs.uninstallProducer }}" != "true" && "${{ inputs.uninstallConsumer }}" != "true" && "${{ inputs.uninstallAirflow }}" != "true" ]]; then
+            echo "::error::Nothing selected — set at least one of uninstallProducer / uninstallConsumer / uninstallAirflow to true before running."
+            exit 1
+          fi
+          echo "Selected for uninstall:"
+          [[ "${{ inputs.uninstallProducer }}" == "true" ]] && echo "  - producer"
+          [[ "${{ inputs.uninstallConsumer }}" == "true" ]] && echo "  - consumer"
+          [[ "${{ inputs.uninstallAirflow }}" == "true" ]] && echo "  - airflow (dpn-airflow)"
+          true
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Read Deployment Config
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f "${PARAMETERS_FILE}" ]; then
+            echo "ERROR: ${PARAMETERS_FILE} not found!"
+            exit 1
+          fi
+          for key in $(jq -r 'keys_unsorted[]' "${PARAMETERS_FILE}"); do
+            value=$(jq -r ".\"$key\"" "${PARAMETERS_FILE}")
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+          done
+
+      - name: Pre-Uninstall Checklist
+        shell: bash
+        run: |
+          echo "CONFIRM BEFORE PROCEEDING:"
+          echo "1. Pipelines stopped"
+          echo "2. No active file ingestion"
+          echo "3. Kafka topics drained"
+          echo "4. Backups taken if required"
+
+      - name: Cloud Login
+        uses: ./.github/actions/cloud-login
+        with:
+          cloud: ${{ inputs.cloud }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-account-id: ${{ env.AWS_ACCOUNT_ID }}
+          eks-cluster: ${{ env.EKS_CLUSTER }}
+
+      - name: Helm Uninstall
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ inputs.uninstallProducer }}" == "true" ]]; then
+            while IFS= read -r RELEASE; do
+              [ -z "$RELEASE" ] && continue
+              echo "Uninstalling $RELEASE"
+              helm uninstall "$RELEASE" -n "$NAMESPACE"
+            done < <(helm list -n "$NAMESPACE" -q | grep -E '^producer' || true)
+          fi
+
+          if [[ "${{ inputs.uninstallConsumer }}" == "true" ]]; then
+            while IFS= read -r RELEASE; do
+              [ -z "$RELEASE" ] && continue
+              echo "Uninstalling $RELEASE"
+              helm uninstall "$RELEASE" -n "$NAMESPACE"
+            done < <(helm list -n "$NAMESPACE" -q | grep -E '^consumer' || true)
+          fi
+
+          if [[ "${{ inputs.uninstallAirflow }}" == "true" ]]; then
+            if helm status dpn-airflow -n "$NAMESPACE" >/dev/null 2>&1; then
+              echo "Uninstalling dpn-airflow"
+              helm uninstall dpn-airflow -n "$NAMESPACE"
+            else
+              echo "dpn-airflow not installed, skipping"
+            fi
+          fi
+
+      - name: Verification
+        shell: bash
+        run: |
+          echo "Deployments:"
+          kubectl get deployments -n "$NAMESPACE"
+          echo "Pods:"
+          kubectl get pods -n "$NAMESPACE"
+          echo "Helm Releases:"
+          helm list -n "$NAMESPACE"

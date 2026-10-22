@@ -1,0 +1,153 @@
+{% from "_icons.html" import arrow_right, error as error_icon, checkmark %}
+{#
+  Step 2's fields — the right-hand panel of the New Data Product screen
+  (see ui/templates/new.html's #review-panel). Split out of review.html so
+  the exact same markup can be rendered two ways:
+    - a full page (review.html includes this, for a direct/no-JS visit to
+      /data-products/preview or /data-products/confirm)
+    - a standalone fragment (ui/app.py's _render_review_page() returns just
+      this template, no base.html chrome, when the request carries the
+      X-DPN-Panel-Request header — see ui/static/js/inline-review.js, which
+      injects the response straight into #review-panel instead of
+      navigating the browser there).
+
+  Each field below carries three empty status slots (success/verifying
+  icons + a verifying-text line, alongside the existing error icon/text) —
+  ui/static/js/review-live-check.js fills these in as soon as the panel
+  mounts and again on every edit, checking the field's current value
+  against the platform's real Kafka broker/storage account. See
+  layout.css's "Review step's live... indicator" section for the CSS.
+#}
+<h3>Step 2: Review Names</h3>
+
+{#
+  A registered/duplicate product_type is caught before this panel is ever
+  reached — both at preview time (ui/app.py's
+  preview_data_product()/registry_has_product()) and as a create-time race
+  (confirm_data_product()'s DuplicateProductError branch) send the user
+  back to Step 1's own Data Product Name field instead (see new.html),
+  since there's no such field in this panel to attach that error to. So
+  field_error here is always one of this pathway's own name fields
+  (source_container_name / src_topic_name / target_container_name /
+  target_topic_name), never "product_type".
+#}
+{% if error and not field_error %}
+<div class="dpn-alert--error">{{ error }}</div>
+{% endif %}
+
+<!-- <div class="dpn-info-box">
+  <div class="dpn-info-box__row">
+    <span><strong>Organisation:</strong> {{ org_name }}</span>
+    <span class="dpn-info-box__dot"></span>
+    <span><strong>Cloud provider:</strong> {{ cloud_provider }}</span>
+  </div>
+  <p class="dpn-info-box__hint">
+    {{ step1.product_type }} &middot; pathway {{ step1.pipeline_type }} &middot; every {{ step1.schedule_seconds }}s &middot; execution {{ step1.execution_mode }}
+  </p>
+</div> -->
+
+<p class="dpn-field__hint" style="font-style: normal;">
+  Review the storage names that will be used for this data product.<br>
+  The names are based on the product name you entered earlier. You can change them if needed to match
+  your organisation's naming standards. Make sure the names refer to existing storage resources that
+  this data product should use.
+</p>
+
+<form class="dpn-validate" method="post" action="/data-products/confirm" novalidate>
+  <input type="hidden" name="product_type" value="{{ step1.product_type }}">
+  <input type="hidden" name="pipeline_type" value="{{ step1.pipeline_type }}">
+  <input type="hidden" name="schedule_seconds" value="{{ step1.schedule_seconds }}">
+  <input type="hidden" name="execution_mode" value="{{ step1.execution_mode }}">
+
+  <div class="dpn-form-fields">
+    {% if step1.pipeline_type == "file" %}
+    <div class="dpn-field {% if field_error == 'source_container_name' %}has-error{% endif %}" data-field="source_container_name">
+      <label class="dpn-field__label" for="source_container_name">Source Container</label>
+      <div class="dpn-field__control">
+        <input class="dpn-input" id="source_container_name" name="source_container_name" value="{{ names.source_container_name }}" required>
+        <span class="dpn-field__success-icon">{{ checkmark() }}</span>
+        <span class="dpn-field__verifying-icon"></span>
+        <span class="dpn-field__error-icon">{{ error_icon() }}</span>
+      </div>
+      <p class="dpn-field__verifying-text">Verifying</p>
+      <p class="dpn-field__error-text">{% if field_error == "source_container_name" %}{{ error }}{% endif %}</p>
+      <p class="dpn-field__hint">
+        Review the name of the topic that contains the source data for this data product. Or use an
+        existing container name, if the data needs to be read from there.
+      </p>
+    </div>
+
+    <div class="dpn-field {% if field_error == 'target_container_name' %}has-error{% endif %}" data-field="target_container_name">
+      <label class="dpn-field__label" for="target_container_name">Target Container</label>
+      <div class="dpn-field__control">
+        <input class="dpn-input" id="target_container_name" name="target_container_name" value="{{ names.target_container_name }}" required>
+        <span class="dpn-field__success-icon">{{ checkmark() }}</span>
+        <span class="dpn-field__verifying-icon"></span>
+        <span class="dpn-field__error-icon">{{ error_icon() }}</span>
+      </div>
+      <p class="dpn-field__verifying-text">Verifying</p>
+      <p class="dpn-field__error-text">{% if field_error == "target_container_name" %}{{ error }}{% endif %}</p>
+      <p class="dpn-field__hint">
+        Review the name of the topic where processed data will be written. Ensure these meets your
+        cloud provider storage naming rules.
+      </p>
+    </div>
+
+    <div class="dpn-field {% if field_error == 'target_topic_name' %}has-error{% endif %}" data-field="target_topic_name">
+      <label class="dpn-field__label" for="target_topic_name">Target Notification Topic</label>
+      <div class="dpn-field__control">
+        <input class="dpn-input" id="target_topic_name" name="target_topic_name" value="{{ names.target_topic_name }}" required>
+        <span class="dpn-field__success-icon">{{ checkmark() }}</span>
+        <span class="dpn-field__verifying-icon"></span>
+        <span class="dpn-field__error-icon">{{ error_icon() }}</span>
+      </div>
+      <p class="dpn-field__verifying-text">Verifying</p>
+      <p class="dpn-field__error-text">{% if field_error == "target_topic_name" %}{{ error }}{% endif %}</p>
+      <p class="dpn-field__hint">
+        Review the notification topic that should receive updates when new files are published to the
+        target container. Subscribed systems can use these notifications to detect and process new data.
+      </p>
+    </div>
+
+    {% else %}
+    <div class="dpn-field {% if field_error == 'src_topic_name' %}has-error{% endif %}" data-field="src_topic_name">
+      <label class="dpn-field__label" for="src_topic_name">Source Topic</label>
+      <div class="dpn-field__control">
+        <input class="dpn-input" id="src_topic_name" name="src_topic_name" value="{{ names.src_topic_name }}" required>
+        <span class="dpn-field__success-icon">{{ checkmark() }}</span>
+        <span class="dpn-field__verifying-icon"></span>
+        <span class="dpn-field__error-icon">{{ error_icon() }}</span>
+      </div>
+      <p class="dpn-field__verifying-text">Verifying</p>
+      <p class="dpn-field__error-text">{% if field_error == "src_topic_name" %}{{ error }}{% endif %}</p>
+      <p class="dpn-field__hint">
+        Must not already exist — this platform only ever creates brand-new topics, so an existing name
+        (source or target) is rejected as a collision. The consumer group id is calculated from the
+        product name automatically — there's nothing to set here for it.
+      </p>
+    </div>
+
+    <div class="dpn-field {% if field_error == 'target_topic_name' %}has-error{% endif %}" data-field="target_topic_name">
+      <label class="dpn-field__label" for="target_topic_name">Target Topic</label>
+      <div class="dpn-field__control">
+        <input class="dpn-input" id="target_topic_name" name="target_topic_name" value="{{ names.target_topic_name }}" required>
+        <span class="dpn-field__success-icon">{{ checkmark() }}</span>
+        <span class="dpn-field__verifying-icon"></span>
+        <span class="dpn-field__error-icon">{{ error_icon() }}</span>
+      </div>
+      <p class="dpn-field__verifying-text">Verifying</p>
+      <p class="dpn-field__error-text">{% if field_error == "target_topic_name" %}{{ error }}{% endif %}</p>
+      <p class="dpn-field__hint">
+        Enriched messages are produced straight here — no intermediate RAW topic.
+      </p>
+    </div>
+    {% endif %}
+
+    <div class="dpn-step-actions">
+      <button class="dpn-btn dpn-btn--primary" type="submit">
+        Create &amp; Launch
+        {{ arrow_right() }}
+      </button>
+    </div>
+  </div>
+</form>

@@ -1,0 +1,8 @@
+apiVersion: v2
+name: self-service
+description: >
+  DPN data product self-service UI. Business users create data products
+  here; the UI creates the corresponding adaptor/schema_mapper Deployments
+  directly via the Kubernetes API (service/k8s_ops.py) — see
+  docs/AKS_DEPLOYMENT.md.
+version: 1.0.0

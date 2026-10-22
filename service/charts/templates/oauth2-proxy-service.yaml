@@ -1,0 +1,21 @@
+{{- if .Values.oauth2Proxy.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.name }}-oauth2-proxy
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ .Values.name }}-oauth2-proxy
+spec:
+  selector:
+    app: {{ .Values.name }}-oauth2-proxy
+  ports:
+    {{- if .Values.oauth2Proxy.tls.enabled }}
+    - port: {{ .Values.oauth2Proxy.tls.servicePort }}
+      targetPort: {{ .Values.oauth2Proxy.tls.servicePort }}
+    {{- else }}
+    - port: {{ .Values.oauth2Proxy.servicePort | default 4180 }}
+      targetPort: 4180
+    {{- end }}
+  type: ClusterIP
+{{- end }}

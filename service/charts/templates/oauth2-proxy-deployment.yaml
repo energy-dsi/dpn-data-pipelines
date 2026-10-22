@@ -1,0 +1,144 @@
+{{- if .Values.oauth2Proxy.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.name }}-oauth2-proxy
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ .Values.name }}-oauth2-proxy
+spec:
+  replicas: {{ .Values.oauth2Proxy.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      app: {{ .Values.name }}-oauth2-proxy
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.name }}-oauth2-proxy
+      annotations:
+        # Roll the pods when the rendered config changes — a ConfigMap
+        # update alone would otherwise leave the running proxy on the old
+        # settings.
+        checksum/config: {{ include (print $.Template.BasePath "/oauth2-proxy-configmap.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+      # dpn-tls carries only truststore.jks/keystore.jks (password-protected
+      # PKCS12 — see utils/kafka_truststore.py's module docstring for why
+      # there's no loose ca.crt/tls.crt/tls.key). oauth2-proxy is a real Go
+      # binary with no PKCS12 support of its own, so this initContainer
+      # extracts real PEM files from them once, into the oauth2-proxy-certs
+      # emptyDir below, before the main container starts — reusing the
+      # self-service image (already has `cryptography` + utils/) rather than
+      # adding a second image just for this.
+      initContainers:
+        - name: extract-certs
+          image: "{{ .Values.imageRegistry | default (printf "%<<CONTAINER_REGISTRY_URL>>/dsi" .Values.acrName) }}/{{ .Values.imageName }}:{{ .Values.imageTag }}"
+          imagePullPolicy: {{ .Values.oauth2Proxy.image.pullPolicy }}
+          command: ["python", "-m", "service.scripts.extract_oauth2_proxy_certs"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: TRUSTSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.tlsAuthSecretName | default "tls-auth-secret" }}
+                  key: TRUSTSTORE_PASSWORD
+            - name: KEYSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.tlsAuthSecretName | default "tls-auth-secret" }}
+                  key: KEYSTORE_PASSWORD
+          volumeMounts:
+            - name: dpn-tls
+              mountPath: /etc/secrets
+              readOnly: true
+            - name: oauth2-proxy-certs
+              mountPath: /etc/kafka/secrets
+      containers:
+        - name: oauth2-proxy
+          image: "{{ .Values.oauth2Proxy.image.repository }}:{{ .Values.oauth2Proxy.image.tag }}"
+          imagePullPolicy: {{ .Values.oauth2Proxy.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          args:
+            - --config=/etc/oauth2-proxy/oauth2-proxy.cfg
+          env:
+            # Same credential already required for Kafka OAuth — dpn-service
+            # -client is shared by both, so no separate Secret to provision.
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.kafkaOauthSecretName | default "dpn-keycloak-secrets" }}
+                  key: KC_SERVICE_CLIENT_SECRET
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.name }}-oauth2-proxy-cookie
+                  key: cookie-secret
+          ports:
+            {{- if .Values.oauth2Proxy.tls.enabled }}
+            - name: https
+              containerPort: {{ .Values.oauth2Proxy.tls.servicePort }}
+            {{- else }}
+            - name: http
+              containerPort: 4180
+            {{- end }}
+          # /ping is oauth2-proxy's unauthenticated health endpoint — exempt
+          # from the OIDC flow, so a probe never gets bounced to Keycloak.
+          # Probes speak HTTPS too once tls.enabled drops the plain-HTTP
+          # listener entirely (see oauth2-proxy-configmap.yaml).
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: {{ .Values.oauth2Proxy.tls.enabled | ternary .Values.oauth2Proxy.tls.servicePort 4180 }}
+              {{- if .Values.oauth2Proxy.tls.enabled }}
+              scheme: HTTPS
+              {{- end }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: {{ .Values.oauth2Proxy.tls.enabled | ternary .Values.oauth2Proxy.tls.servicePort 4180 }}
+              {{- if .Values.oauth2Proxy.tls.enabled }}
+              scheme: HTTPS
+              {{- end }}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          volumeMounts:
+            - name: config
+              mountPath: /etc/oauth2-proxy
+              readOnly: true
+            # ca.crt (provider_ca_files) and, when tls.enabled, tls.crt/
+            # tls.key — all written by the extract-certs initContainer
+            # above, not dpn-tls directly (see that container's comment).
+            - name: oauth2-proxy-certs
+              mountPath: /etc/kafka/secrets
+              readOnly: true
+          resources:
+{{ toYaml .Values.oauth2Proxy.resources | indent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Values.name }}-oauth2-proxy
+        - name: dpn-tls
+          secret:
+            secretName: {{ .Values.kafkaTlsSecretName | default "dpn-tls" }}
+        - name: oauth2-proxy-certs
+          emptyDir: {}
+{{- end }}

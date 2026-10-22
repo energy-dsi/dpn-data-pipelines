@@ -1,0 +1,255 @@
+# Uninstall pipeline for the self-service architecture on AKS — the
+# dpn-self-service-scoped equivalent of dsi-data-pipelines-uninstall-cd.yaml
+# (that one targets ns-dpn-01 via the shared per-schema-type config JSON's
+# NAMESPACE key, filtering releases by a producer/consumer name-prefix
+# grep — the old architecture's namespace and release-naming scheme, not
+# dpn-self-service's).
+#
+# Hardcodes namespace=ns-dpn-dp-01 and offers a release_name dropdown
+# scoped to the 3 releases dpn-self-service-ci/cd.yaml actually manage via
+# Helm — dpn-self-service itself, and the two consumer singletons.
+# Dynamically-created producer Deployments (service/k8s_ops.py) are plain
+# kubectl objects, not Helm releases — deleting a specific data product is
+# a self-service UI action (Delete), not a pipeline operation, and
+# uninstalling dpn-self-service itself does not touch them either (they
+# stay running until deleted individually or the namespace itself is torn
+# down out of band).
+
+trigger: none
+
+pool:
+  name: <<YOUR AGENT POOL>>
+
+parameters:
+- name: ServiceConnection
+  displayName: 'ServiceConnection details'
+  type: string
+  default: 'sc-dpn-dev-001'
+  values:
+    - sc-dpn-dev-001
+    - sc-dpn-dev-002
+    - sc-dpn-test-001
+    - sc-dpn-test-002
+    - sc-dpn-pdev-ppd-001
+    - sc-dpn-ptest-ppd-001
+    - sc-dpn-puat-ppd-001
+- name: environment
+  displayName: 'Select Environment'
+  type: string
+  default: dev
+  values:
+    - dev
+    - devtest
+    - test
+    - pdev
+    - ptest
+    - puat
+- name: cluster
+  displayName: 'Choose DPN Cluster'
+  type: string
+  default: dpn01
+  values:
+    - dpn01
+    - dpn02
+- name: release_name
+  displayName: 'Helm release to uninstall'
+  type: string
+  default: dpn-self-service
+  values:
+    - dpn-self-service
+    - dpn-consumer-file-extractor
+    - dpn-consumer-topic-extractor
+
+variables:
+- name: PARAMETERS_FILE
+  value: '.pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.cluster }}.json'
+- name: PRODUCER_NAMESPACE
+  value: ns-dpn-dp-01
+- ${{ if eq(parameters.environment, 'dev') }}:
+  - name: APPROVAL_GROUP
+    value: dsi-dev
+- ${{ elseif eq(parameters.environment, 'devtest') }}:
+  - name: APPROVAL_GROUP
+    value: dsi-devtest
+- ${{ elseif eq(parameters.environment, 'test') }}:
+  - name: APPROVAL_GROUP
+    value: dsi-test
+- ${{ else }}:
+  - name: APPROVAL_GROUP
+    value: dsi-ppd
+
+stages:
+# --------------------------------------------------
+# Stage 0 — Pre-Uninstall Checklist
+# --------------------------------------------------
+- stage: Precheck
+  displayName: 'Pre-Uninstall Checklist'
+  jobs:
+  - job: Precheck
+    steps:
+    - script: |
+        echo "CONFIRM BEFORE PROCEEDING:"
+        echo "1. No business users are actively creating/managing data products through this UI"
+        echo "2. If uninstalling a consumer singleton: confirm no in-flight files/messages will be stranded"
+        echo "3. Backups taken if required (registry: service/registry_backup.py already mirrors to cloud storage)"
+      displayName: 'Checklist Acknowledgement'
+
+# --------------------------------------------------
+# Stage 1 — Load Config & AKS Auth
+# --------------------------------------------------
+- stage: Prepare
+  displayName: 'Load Config & AKS Auth'
+  dependsOn: Precheck
+  jobs:
+  - job: Prepare
+    steps:
+    - script: |
+        for k in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+          echo "##vso[task.setvariable variable=$k]$(jq -r ".\"$k\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")"
+        done
+      displayName: 'Read Environment Variables'
+
+    - task: AzureCLI@2
+      displayName: 'AKS Auth'
+      inputs:
+        azureSubscription: ${{ parameters.ServiceConnection }}
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          az aks install-cli
+          az aks get-credentials --resource-group $(RESOURCE_GROUP) --name $(AKS_CLUSTER) --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+
+# -----------------------------
+# Stage 2 — Preview (read-only, no approval gate of its own)
+# -----------------------------
+# Deliberately NOT a deployment job / no `environment:` here — this used to
+# be its own environment-gated "Approval" stage, but that meant approving
+# twice for one uninstall: this stage's gate, then the Uninstall stage's
+# own gate below, both against the same dsi-devtest/dsi-ppd Environment
+# (ADO's approval check fires per deployment-job execution, not once per
+# pipeline run). A plain job here still lets whoever is about to approve
+# Uninstall read this stage's log — the live `helm status` — before they
+# click approve, without a second prompt.
+- stage: Preview
+  displayName: "Preview – Current Release Status"
+  dependsOn: Prepare
+  jobs:
+  - job: Preview
+    displayName: "Preview dpn-self-service Helm Uninstall (READ-ONLY)"
+    steps:
+    - script: |
+        echo "===================================================="
+        echo "DPN SELF-SERVICE UNINSTALL — REVIEW BEFORE APPROVING"
+        echo "===================================================="
+        echo "Environment    : ${{ parameters.environment }}"
+        echo "Namespace      : $(PRODUCER_NAMESPACE)"
+        echo "Release        : ${{ parameters.release_name }}"
+        echo "===================================================="
+      displayName: "Preview Context"
+
+    - task: AzureCLI@2
+      displayName: "Preview Helm Release (READ-ONLY)"
+      inputs:
+        azureSubscription: "${{ parameters.ServiceConnection }}"
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          az aks install-cli
+          az aks get-credentials --resource-group $(RESOURCE_GROUP) --name $(AKS_CLUSTER) --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+
+          echo "Current status of ${{ parameters.release_name }}:"
+          helm status ${{ parameters.release_name }} -n $(PRODUCER_NAMESPACE) || echo "Release not found — nothing to uninstall."
+          echo "NO resources have been deleted in this stage."
+
+# -----------------------------
+# Stage 3 — Helm Uninstall
+# -----------------------------
+- stage: Uninstall
+  dependsOn: Preview
+  jobs:
+  # The ONE approval gate for this whole pipeline: a deployment job
+  # targeting the real Environment, not a plain job that merely dependsOn
+  # the stage above — dependsOn alone is only an ordering hint for a
+  # top-to-bottom run; Azure DevOps still lets anyone with pipeline execute
+  # rights re-run a single stage on its own (pipeline run's "..." menu >
+  # Run stage), which would skip approval entirely if this were a plain
+  # job. That would run `helm uninstall` against a live release with no
+  # approval check at all. Putting the environment check on the actual
+  # uninstalling job closes that gap.
+  - deployment: Uninstall
+    ${{ if eq(parameters.environment, 'dev') }}:
+      environment: dsi-dev
+    ${{ elseif eq(parameters.environment, 'devtest') }}:
+      environment: dsi-devtest
+    ${{ elseif eq(parameters.environment, 'test') }}:
+      environment: dsi-test
+    ${{ else }}:
+      environment: dsi-ppd
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - script: |
+              for k in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+                echo "##vso[task.setvariable variable=$k]$(jq -r ".\"$k\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")"
+              done
+            displayName: 'Reload Environment Variables'
+
+          - task: AzureCLI@2
+            displayName: 'Helm Uninstall'
+            inputs:
+              azureSubscription: ${{ parameters.ServiceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az aks get-credentials --resource-group $(RESOURCE_GROUP) --name $(AKS_CLUSTER) --overwrite-existing
+                kubelogin convert-kubeconfig -l azurecli
+
+                if helm status ${{ parameters.release_name }} -n $(PRODUCER_NAMESPACE) >/dev/null 2>&1; then
+                  helm uninstall ${{ parameters.release_name }} -n $(PRODUCER_NAMESPACE) --wait --timeout 10m
+                  echo "Uninstalled ${{ parameters.release_name }}"
+                else
+                  echo "Release ${{ parameters.release_name }} not found in $(PRODUCER_NAMESPACE) — nothing to do."
+                fi
+
+# -----------------------------
+# Stage 4 — Verify
+# -----------------------------
+- stage: Verify
+  displayName: 'Final Verification'
+  dependsOn: Uninstall
+  jobs:
+  - job: Verify
+    steps:
+    - script: |
+        for k in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+          echo "##vso[task.setvariable variable=$k]$(jq -r ".\"$k\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")"
+        done
+      displayName: 'Load Environment Variables'
+
+    - task: AzureCLI@2
+      displayName: 'AKS Auth'
+      inputs:
+        azureSubscription: ${{ parameters.ServiceConnection }}
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          az aks install-cli
+          az aks get-credentials --resource-group $(RESOURCE_GROUP) --name $(AKS_CLUSTER) --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+
+    - script: |
+        echo "Using namespace: $(PRODUCER_NAMESPACE)"
+        echo "Remaining Helm releases:"
+        helm list -n $(PRODUCER_NAMESPACE)
+        echo "Remaining deployments:"
+        kubectl get deployments -n $(PRODUCER_NAMESPACE)
+        echo "Remaining pods:"
+        kubectl get pods -n $(PRODUCER_NAMESPACE)
+      displayName: 'Verification'

@@ -1,0 +1,252 @@
+name: DPN CD - Self-Service Data Pipelines
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select Environment"
+        required: true
+        default: "test"
+        type: choice
+        options:
+          - dev
+          - test
+
+      cluster:
+        description: "Target DPN Cluster"
+        required: true
+        default: "dpn01"
+        type: choice
+        options:
+          - dpn01
+          - dpn02
+
+      cloud:
+        description: "Target Cloud Provider"
+        required: true
+        default: "aws"
+        type: choice
+        options:
+          - azure
+          - aws
+          - gcp
+
+      imageTag:
+        description: "Image Tag To Deploy"
+        required: true
+        type: string
+
+env:
+  PARAMETERS_FILE: .github/config/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.json
+  IMAGE_TAG: ${{ inputs.imageTag }}
+  CLOUD: ${{ inputs.cloud }}
+  PRODUCER_NAMESPACE: ns-dpn-dp-01
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Helm Deploy
+    runs-on: [self-hosted, vmss]
+    environment: ${{ inputs.environment }}-${{ inputs.cluster }}
+    steps:
+      - name: Applied Parameters
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "environment=${{ inputs.environment }}"
+          echo "cluster=${{ inputs.cluster }}"
+          echo "cloud=${{ inputs.cloud }}"
+          echo "imageTag=${{ inputs.imageTag }}"
+          echo "namespace=$PRODUCER_NAMESPACE"
+
+          value="${{ inputs.imageTag }}"
+          if [ "$value" != "$(printf '%s' "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" ]; then
+            echo "::error::Input 'imageTag' has leading/trailing whitespace: '$value'"
+            exit 1
+          fi
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Read Deployment Config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "${PARAMETERS_FILE}" ]; then
+            echo "ERROR: ${PARAMETERS_FILE} not found!"
+            exit 1
+          fi
+
+          echo "Loading config from ${PARAMETERS_FILE}"
+          for key in $(jq -r 'keys_unsorted[]' "${PARAMETERS_FILE}"); do
+            value=$(jq -r ".\"$key\"" "${PARAMETERS_FILE}")
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+            echo "Set ${key}"
+          done
+
+      - name: Cloud Login
+        uses: ./.github/actions/cloud-login
+        with:
+          cloud: ${{ inputs.cloud }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-account-id: ${{ env.AWS_ACCOUNT_ID }}
+          eks-cluster: ${{ env.EKS_CLUSTER }}
+          gcp-project-id: ${{ env.GCP_PROJECT_ID }}
+          gcp-region: ${{ env.GCP_REGION }}
+          gke-cluster: ${{ env.GKE_CLUSTER }}
+          gcp-workload-identity-provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          gcp-service-account: ${{ env.GCP_SERVICE_ACCOUNT }}
+
+      - name: Verify Namespace Exists
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! kubectl get ns "$PRODUCER_NAMESPACE" >/dev/null 2>&1; then
+            echo "::error::Namespace $PRODUCER_NAMESPACE does not exist on this cluster. Create it once with: kubectl create namespace $PRODUCER_NAMESPACE"
+            exit 1
+          fi
+
+          helm ls -n "$PRODUCER_NAMESPACE"
+
+      ###################################################################
+      # HELM DEPLOY
+      # imageRegistry / imagePullSecret come from each chart's values.yaml
+      # (or the per-cloud values file); IMAGE_REGISTRY from the cloud config
+      # JSON, when present, overrides imageRegistry.
+      ###################################################################
+      - name: Helm Deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Optional per-cloud/env/cluster values override shipped with each
+          # chart (e.g. values/aws/test-dpn01.yaml). Absent => chart defaults.
+          env_values_args() {
+            local chart="$1"
+            local f="$chart/values/$CLOUD/${{ inputs.environment }}-${{ inputs.cluster }}.yaml"
+            if [ -f "$f" ]; then
+              echo "-f $f"
+            fi
+          }
+
+          # Optional imageRegistry override from the cloud config JSON.
+          registry_args() {
+            if [ -n "${IMAGE_REGISTRY:-}" ]; then
+              echo "--set imageRegistry=$IMAGE_REGISTRY"
+            fi
+          }
+
+          deploy_consumer() {
+            local release="$1" chart="$2"
+            local envvals regargs
+            envvals=$(env_values_args "$chart")
+            regargs=$(registry_args)
+            helm lint "$chart"
+            helm upgrade --install "$release" "$chart" $envvals $regargs \
+              --set namespace="$PRODUCER_NAMESPACE",imageTag="$IMAGE_TAG" \
+              --set imageName="$release",cloudProviderType="$CLOUD" \
+              -n "$PRODUCER_NAMESPACE" --dry-run --debug >/dev/null
+            helm upgrade --install "$release" "$chart" $envvals $regargs \
+              --set namespace="$PRODUCER_NAMESPACE",imageTag="$IMAGE_TAG" \
+              --set imageName="$release",cloudProviderType="$CLOUD" \
+              -n "$PRODUCER_NAMESPACE"
+          }
+
+          echo "========================================"
+          echo "CONSUMER SINGLETONS"
+          echo "========================================"
+          deploy_consumer dpn-consumer-file-extractor  blueprints/consumer/file/extractor/charts
+          deploy_consumer dpn-consumer-topic-extractor blueprints/consumer/topic/extractor/charts
+
+          echo "========================================"
+          echo "SELF-SERVICE UI"
+          echo "========================================"
+          helm lint service/charts
+
+          # Keycloak auth (oauth2Proxy) + HTTPS are ON by default, as in
+          # develop's dpn-self-service-cd.yaml. externalUrl needs the
+          # LoadBalancer address: use OAUTH2_PROXY_EXTERNAL_URL from the
+          # environment config JSON if set, else reuse the existing
+          # dpn-self-service-external address (IP or hostname), else deploy
+          # once with auth off to create the Service, wait for an address
+          # (AWS NLB hostname / Azure+GCP IP), and redeploy.
+          deploy_self_service() {
+            local oauth2_enabled="$1"
+            local external_url="$2"
+            local mode="${3:-}"
+            local envvals regargs
+            envvals=$(env_values_args service/charts)
+            regargs=$(registry_args)
+            helm upgrade --install dpn-self-service service/charts $mode $envvals $regargs \
+              --set namespace="$PRODUCER_NAMESPACE",producerNamespace="$PRODUCER_NAMESPACE" \
+              --set imageTag="$IMAGE_TAG",imageName=dpn-self-service \
+              --set env.DPN_IMAGE_TAG="$IMAGE_TAG" \
+              --set env.DPN_IMAGE_NAME_PREFIX=dpn \
+              --set env.DPN_NAMESPACE="$PRODUCER_NAMESPACE" \
+              --set env.DPN_CLOUD_PROVIDER="$CLOUD",loadBalancer.cloud="$CLOUD" \
+              --set oauth2Proxy.enabled="$oauth2_enabled" \
+              --set oauth2Proxy.tls.enabled="$oauth2_enabled" \
+              --set oauth2Proxy.externalUrl="$external_url" \
+              -n "$PRODUCER_NAMESPACE"
+          }
+
+          lb_address() {
+            kubectl get svc dpn-self-service-external -n "$PRODUCER_NAMESPACE" \
+              -o jsonpath='{.status.loadBalancer.ingress[0].ip}{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true
+          }
+
+          # Dry-run once with auth on (the final state) to catch template errors.
+          deploy_self_service true "https://dry-run.invalid" "--dry-run --debug" >/dev/null
+
+          EXTERNAL_URL="${OAUTH2_PROXY_EXTERNAL_URL:-}"
+
+          if [ -z "$EXTERNAL_URL" ]; then
+            EXISTING=$(lb_address)
+            if [ -n "$EXISTING" ]; then
+              EXTERNAL_URL="https://${EXISTING}"
+              echo "Reusing dpn-self-service-external's existing LoadBalancer address: $EXTERNAL_URL"
+            fi
+          fi
+
+          if [ -n "$EXTERNAL_URL" ]; then
+            deploy_self_service true "$EXTERNAL_URL"
+            kubectl rollout status deployment/dpn-self-service -n "$PRODUCER_NAMESPACE" --timeout=180s
+          else
+            echo "No known LoadBalancer address yet — deploying once with Keycloak auth/HTTPS off to create the Service, then waiting for an address."
+            deploy_self_service false ""
+            kubectl rollout status deployment/dpn-self-service -n "$PRODUCER_NAMESPACE" --timeout=180s
+
+            DISCOVERED=""
+            for _ in $(seq 1 18); do
+              DISCOVERED=$(lb_address)
+              [ -n "$DISCOVERED" ] && break
+              sleep 10
+            done
+
+            if [ -n "$DISCOVERED" ]; then
+              EXTERNAL_URL="https://${DISCOVERED}"
+              echo "LoadBalancer address assigned: $EXTERNAL_URL — redeploying with Keycloak auth/HTTPS on."
+              deploy_self_service true "$EXTERNAL_URL"
+              kubectl rollout status deployment/dpn-self-service -n "$PRODUCER_NAMESPACE" --timeout=180s
+              echo "::warning::Keycloak auth/HTTPS enabled automatically at $EXTERNAL_URL. Register <that URL>/oauth2/callback and <that URL> as redirect/post-logout URIs on Keycloak's dpn-service-client (see service/README.md's Keycloak authentication section) — login will not work until that one-time manual step is done."
+            else
+              echo "::warning::dpn-self-service-external had no LoadBalancer address after 3 minutes — deployed with Keycloak auth/HTTPS OFF. Re-run this workflow once one is assigned; it will be picked up automatically next time."
+            fi
+          fi
+
+          echo "========================================"
+          echo "POST-DEPLOY VERIFICATION"
+          echo "========================================"
+          for d in dpn-consumer-file-extractor dpn-consumer-topic-extractor; do
+            kubectl get deployment "$d" -n "$PRODUCER_NAMESPACE"
+          done
+
+          echo "Self-service CD deploy complete."

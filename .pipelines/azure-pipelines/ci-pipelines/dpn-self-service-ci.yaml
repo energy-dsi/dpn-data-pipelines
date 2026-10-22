@@ -1,0 +1,689 @@
+# CI pipeline for the self-service architecture — scan, test, build, push,
+# and record image digests. Does NOT deploy anything: see
+# ../cd-pipelines/dpn-self-service-cd.yaml, which takes an imageTag input
+# (and, per image, the digest recorded in the Docker Digests artifact
+# below) and only ever runs `helm upgrade` — no docker build/push in that
+# file at all.
+#
+# No imageTag parameter here — every run tags its images with its own
+# Build.BuildNumber automatically, so queuing this pipeline never prompts
+# for a value. Read the tag it actually used off the run itself
+# (Build.BuildNumber, shown in the run summary) to pass into CD.
+#
+# Split out of what used to be one combined dpn-self-service-cd.yaml so a
+# deploy never has to rebuild/rescan images that already passed CI, and so
+# "what got scanned/tested" and "what got deployed" are two separate,
+# separately-auditable pipeline runs tied together by that tag.
+#
+# Checkmarx SAST/SCA, FOSSA open-source license/vuln scanning, pytest unit
+# tests + coverage, and SonarQube analysis — same stages/templates as
+# dsi-data-pipelines-ci.yaml (see CxOneScan.yml/FossaScan.yml), reusing the
+# same repo-wide Checkmarx project, FOSSA project, and SonarQube project
+# key, since both pipelines scan the same repository.
+
+trigger:
+- none
+
+pool:
+  name: '<<YOUR AGENT POOL>>'
+
+parameters:
+- name: ServiceConnection
+  displayName: 'ServiceConnection details (for ACR push only)'
+  type: string
+  default: 'sc-dpn-dev-001'
+  values:
+    - sc-dpn-dev-001
+    - sc-dpn-dev-002
+    - sc-dpn-test-001
+    - sc-dpn-test-002
+    - sc-dpn-pdev-ppd-001
+    - sc-dpn-ptest-ppd-001
+    - sc-dpn-puat-ppd-001
+- name: environment
+  displayName: 'Select Environment (selects which ACR to push to)'
+  type: string
+  default: dev
+  values:
+    - dev
+    - devtest
+    - test
+    - pdev
+    - ptest
+    - puat
+- name: cluster
+  displayName: 'Choose DPN Cluster'
+  type: string
+  default: dpn01
+  values:
+    - dpn01
+    - dpn02
+
+variables:
+- group: soner_report
+- group: fossa_scan
+- name: PARAMETERS_FILE
+  value: '.pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.cluster }}.json'
+# No imageTag parameter to fill in at queue time — every run is tagged
+# with this run's own build number automatically. Find the tag a given
+# CI run pushed under from the run's own Build.BuildNumber (shown in the
+# ADO run summary), then pass that same value as CD's imageTag input.
+- name: IMAGE_TAG
+  value: $(Build.BuildNumber)
+- name: CLOC_EXCLUDES
+  value: ".docs,.git,node_modules"
+
+stages:
+# ----------------------------
+# Stage 0 — Announce Image Tag
+# ----------------------------
+# First thing in the run, before any scan/build work starts, so the tag
+# this run will push under is visible without digging into a later
+# stage's logs. logissue type=warning surfaces it as a run-level
+# annotation on the pipeline summary page, not just inline in this step's
+# own log.
+- stage: Announce
+  displayName: 'Announce Image Tag'
+  jobs:
+  - job: Announce
+    steps:
+    - script: |
+        echo "##vso[task.logissue type=warning]Image tag for this CI run: $(IMAGE_TAG)"
+        echo "=================================================="
+        echo " IMAGE TAG FOR THIS RUN: $(IMAGE_TAG)"
+        echo " (= this run's own Build.BuildNumber)"
+        echo " Pass this value as CD's imageTag input to deploy it."
+        echo "=================================================="
+      displayName: 'Image Tag: $(IMAGE_TAG)'
+
+# ----------------------------
+# Stage 1 — Checkmarx Scan
+# ----------------------------
+- stage: 'Checkmarx_Scan'
+  displayName: 'CheckMarx One Scan'
+  dependsOn: Announce
+  jobs:
+  - job:
+    steps:
+    - template: ../CxOneScan.yml
+      parameters:
+        scanType: ''
+        cxoneserviceName: 'checkmarxOne-sc'
+        cxoneProjectName: '$(Build.Repository.Name)'
+        cxoneProjectGroup: 'AZ-APP-CheckmarxOne-NESO'
+        cxoneTenantName: 'neso'
+        appName: 'Checkmarxone'
+
+# ----------------------------
+# Stage 2 — FOSSA Open Source Scan
+# ----------------------------
+- stage: Fossa_Scan
+  displayName: 'FOSSA Open Source Scan'
+  dependsOn: Checkmarx_Scan
+  condition: succeededOrFailed()
+  jobs:
+  - job: fossaScan
+    steps:
+    - checkout: self
+    - template: ../FossaScan.yml
+      parameters:
+        fossaProjectName: $(Build.Repository.Name)
+        failOnIssues: false
+
+# --------------------------------------
+# Stage 3 — Unit Tests and Code Coverage
+# --------------------------------------
+- stage: UnitTests
+  displayName: 'Unit Tests & Code Coverage'
+  dependsOn: Fossa_Scan
+  condition: succeeded()
+  jobs:
+  - job: RunPythonTests
+    displayName: 'Run pytest with coverage.py'
+    steps:
+    - checkout: self
+
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '3.11'
+
+    - script: |
+        set -e
+        python -m pip install --upgrade pip
+
+        for file in $(find . -name "requirements.txt"); do
+          echo "Installing $file"
+          pip install -r "$file"
+        done
+
+        pip install pytest pytest-cov coverage kubernetes azure-core azure-storage-blob telicent-lib telicent_ies_tool dsi_schema_assurance telicent_label_builder
+
+        # dsi_schema_assurance pins opentelemetry-api==1.29.0, which silently downgrades
+        # the opentelemetry-api==1.42.1 required by opentelemetry-sdk/exporter-otlp above,
+        # breaking the otel import chain. Re-assert the requirements.txt pins so they win.
+        for file in $(find . -name "requirements.txt"); do
+          pip install -r "$file"
+        done
+      displayName: 'Install dependencies'
+
+    - script: |
+        set -e
+        export PYTHONPATH=$(Build.SourcesDirectory)
+
+        mkdir -p "$(Build.SourcesDirectory)/test-results"
+        mkdir -p "$(Build.SourcesDirectory)/coverage"
+
+        pytest tests \
+          --junitxml="$(Build.SourcesDirectory)/test-results/junit.xml" \
+          --cov=blueprints \
+          --cov=service \
+          --cov=dpn_observability_sdk \
+          --cov=utils \
+          --cov-report=xml:"$(Build.SourcesDirectory)/coverage/coverage.xml" \
+          --cov-report=term-missing
+
+        echo "Checking coverage output..."
+        ls -la "$(Build.SourcesDirectory)/coverage"
+
+        test -s "$(Build.SourcesDirectory)/coverage/coverage.xml"
+
+      displayName: 'Run tests with pytest and coverage'
+
+    - task: PublishTestResults@2
+      displayName: 'Publish Unit Test Results'
+      inputs:
+        testResultsFormat: JUnit
+        testResultsFiles: 'test-results/junit.xml'
+        failTaskOnFailedTests: true
+
+    - task: PublishCodeCoverageResults@2
+      displayName: 'Publish Code Coverage'
+      inputs:
+        codeCoverageTool: Cobertura
+        summaryFileLocation: 'coverage/coverage.xml'
+        reportDirectory: 'coverage'
+        failIfCoverageEmpty: true
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Coverage Artifact'
+      inputs:
+        targetPath: 'coverage'
+        artifactName: 'coverage'
+
+    - script: |
+        set -e
+        python -m pip install --upgrade pip
+        pip install cyclonedx-bom
+      displayName: 'Install CycloneDX'
+
+    - script: |
+        set -e
+        mkdir -p sbom-output
+        cyclonedx-py requirements ./requirements.txt -o "sbom-output/dpn-self-service-sbom.json"
+        echo "Generated SBOM files:"
+        ls -l sbom-output
+      displayName: 'Generate SBOMs'
+
+    - script: |
+        set -e
+        sudo apt-get update
+        sudo apt-get install -y cloc
+      displayName: 'Install CLOC'
+
+    - script: |
+        set -e
+        echo "Running CLOC analysis..."
+        cloc . --exclude-dir=$(CLOC_EXCLUDES) \
+          --json --out=cloc-report.json
+
+        echo "CLOC Summary:"
+        cloc . --exclude-dir=$(CLOC_EXCLUDES)
+      displayName: 'Run CLOC (JSON)'
+
+    - script: |
+        set -e
+        echo "Running CLOC analysis..."
+        cloc . --exclude-dir=$(CLOC_EXCLUDES) \
+          --xml --out=cloc-report.xml
+
+        echo "CLOC Summary:"
+        cloc . --exclude-dir=$(CLOC_EXCLUDES)
+      displayName: 'Run CLOC (XML)'
+
+    - script: |
+        set -e
+        echo "Copying CLOC reports to staging directory..."
+        mkdir -p $(Build.ArtifactStagingDirectory)/cloc-reports
+
+        ls -l cloc-report.*
+
+        cp cloc-report.xml $(Build.ArtifactStagingDirectory)/cloc-reports
+        cp cloc-report.json $(Build.ArtifactStagingDirectory)/cloc-reports
+      displayName: 'Copy CLOC Reports'
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish SBOM'
+      inputs:
+        targetPath: 'sbom-output'
+        artifactName: 'SBOM'
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish CLOC Report'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/cloc-reports'
+        ArtifactName: 'cloc-reports'
+
+# -------------------------
+# Stage 4 — Sonar Scan
+# -------------------------
+- stage: 'Sonar_Scan'
+  displayName: 'Sonar Scan'
+  dependsOn: UnitTests
+  condition: succeeded()
+  jobs:
+  - job: SonarScan
+    displayName: 'Run SonarQube Analysis and Download Report'
+    workspace:
+      clean: all
+    variables:
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt
+
+    steps:
+    - checkout: self
+
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download Coverage Artifact'
+      inputs:
+        artifact: 'coverage'
+        path: 'coverage'
+
+    - task: DownloadSecureFile@1
+      name: sonarCa
+      displayName: 'Download SonarQube CA certificate'
+      inputs:
+        secureFile: 'sonarcert.pem'
+
+    - script: |
+        set -e
+        sudo cp "$(sonarCa.secureFilePath)" /usr/local/share/ca-certificates/sonarcert.crt
+        sudo update-ca-certificates
+      displayName: 'Install SonarQube CA certificate'
+
+    - script: |
+        set -e
+        python3 --version
+        python3 -m pip install --upgrade pip
+        python3 -m pip install reportlab
+      displayName: 'Use Linux Python and install reportlab'
+
+    - task: SonarQubePrepare@7
+      displayName: 'Prepare SonarQube Analysis'
+      env:
+        NODE_EXTRA_CA_CERTS: $(NODE_EXTRA_CA_CERTS)
+      inputs:
+        SonarQube: 'sonar-neso-sc'
+        scannerMode: 'CLI'
+        configMode: 'manual'
+        cliProjectKey: $(Build.Repository.Name)
+        cliProjectName: $(Build.Repository.Name)
+        cliSources: '.'
+        extraProperties: |
+          sonar.sources=.
+          sonar.language=py
+          sonar.python.coverage.reportPaths=coverage/coverage.xml
+          sonar.exclusions=**/__pycache__/**,**/tests/**,smoke-test/**,**/*.xml,**/*.yaml
+          sonar.coverage.exclusions=**/__init__.py,setup.py,ui/**
+
+    - task: SonarQubeAnalyze@7
+      displayName: 'Sonar Scan task'
+      inputs:
+        jdkversion: 'JAVA_HOME'
+
+    - task: SonarQubePublish@7
+      displayName: 'Publish SonarQube Results'
+      env:
+        NODE_EXTRA_CA_CERTS: $(NODE_EXTRA_CA_CERTS)
+      inputs:
+        pollingTimeoutSec: '600'
+
+    - task: Bash@3
+      displayName: "Download SonarQube Reports"
+      env:
+        SQ_URL: "$(sonar_url)"
+        SQ_TOKEN: "$(sonar_token)"
+        SQ_PROJECT: "$(Build.Repository.Name)"
+        SQ_BRANCH: "$(Build.SourceBranchName)"
+      inputs:
+            targetType: inline
+            script: |
+              set -euo pipefail
+
+              REPORT_DIR="$(Build.SourcesDirectory)/sonarReport"
+              mkdir -p "$REPORT_DIR"
+
+              echo "Sonar URL: ${SQ_URL}"
+              echo "Sonar Project: ${SQ_PROJECT}"
+              echo "Sonar Branch: ${SQ_BRANCH}"
+
+              if [ -z "${SQ_URL}" ] || [[ "${SQ_URL}" == \$\(* ]]; then
+                echo "ERROR: sonar_url is empty or unresolved: ${SQ_URL}"
+                exit 1
+              fi
+
+              if [ -z "${SQ_TOKEN}" ] || [[ "${SQ_TOKEN}" == \$\(* ]]; then
+                echo "ERROR: sonar_token is empty or unresolved"
+                exit 1
+              fi
+
+              echo "Checking SonarQube project exists..."
+
+              if curl -k -L -f -sS -u "${SQ_TOKEN}:" -G "${SQ_URL}/api/components/show" \
+                --data-urlencode "component=${SQ_PROJECT}" \
+                -o "$REPORT_DIR/component_check.json"; then
+                echo "Project found in SonarQube."
+              else
+                echo "ERROR: SonarQube project key '${SQ_PROJECT}' was not found."
+                echo "Check that cliProjectKey matches the actual SonarQube project key."
+                exit 1
+              fi
+
+              download_with_branch_or_default() {
+                local endpoint="$1"
+                local output="$2"
+                shift 2
+
+                echo "Trying API with branch: ${SQ_BRANCH}"
+
+                if curl -k -L -f -sS -u "${SQ_TOKEN}:" -G "${SQ_URL}${endpoint}" \
+                  --data-urlencode "component=${SQ_PROJECT}" \
+                  --data-urlencode "branch=${SQ_BRANCH}" \
+                  "$@" \
+                  -o "$output"; then
+                  echo "Downloaded with branch: $output"
+                  return 0
+                fi
+
+                echo "Branch API failed. Retrying without branch..."
+
+                curl -k -L -f -sS -u "${SQ_TOKEN}:" -G "${SQ_URL}${endpoint}" \
+                  --data-urlencode "component=${SQ_PROJECT}" \
+                  "$@" \
+                  -o "$output"
+
+                echo "Downloaded without branch: $output"
+              }
+
+              echo "Downloading project snapshot..."
+              download_with_branch_or_default \
+                "/api/measures/component" \
+                "$REPORT_DIR/sq_project_snapshot.json" \
+                --data-urlencode "metricKeys=alert_status,quality_gate_details,sqale_rating,reliability_rating,security_rating,sqale_debt_ratio,bugs,new_bugs,vulnerabilities,new_vulnerabilities,code_smells,new_code_smells,violations,new_violations,accepted_issues,coverage,new_coverage,line_coverage,branch_coverage,uncovered_lines,uncovered_conditions,duplicated_lines_density,new_duplicated_lines_density,duplicated_lines,duplicated_blocks,duplicated_files,complexity,cognitive_complexity,ncloc,lines,files,classes,functions,statements,security_hotspots,new_security_hotspots,security_hotspots_reviewed,new_security_hotspots_reviewed"
+
+              echo "Downloading metrics history..."
+              download_with_branch_or_default \
+                "/api/measures/search_history" \
+                "$REPORT_DIR/sq_metrics_history.json" \
+                --data-urlencode "metrics=coverage,duplicated_lines_density,bugs,vulnerabilities,code_smells,sqale_rating,reliability_rating,security_rating"
+
+              echo "Downloading security rating history..."
+              download_with_branch_or_default \
+                "/api/measures/search_history" \
+                "$REPORT_DIR/sq_security_rating_history.json" \
+                --data-urlencode "metrics=security_rating"
+
+              echo "All SonarQube JSON files downloaded:"
+              ls -la "$REPORT_DIR"
+
+              test -s "$REPORT_DIR/sq_project_snapshot.json"
+              test -s "$REPORT_DIR/sq_metrics_history.json"
+              test -s "$REPORT_DIR/sq_security_rating_history.json"
+
+    - script: |
+        set -e
+
+        REPORT_DIR="$(Build.SourcesDirectory)/sonarReport"
+        SCRIPT_PATH="$(Build.SourcesDirectory)/.pipelines/azure-pipelines/generate_sonar_pdf.py"
+        OUTPUT_FILE="SonarQube_Report-$(Build.SourceBranchName).pdf"
+
+        echo "Checking PDF generation script..."
+        ls -la "$(Build.SourcesDirectory)/.pipelines/azure-pipelines"
+
+        if [ ! -f "$SCRIPT_PATH" ]; then
+          echo "ERROR: PDF generation script not found at $SCRIPT_PATH"
+          exit 1
+        fi
+
+        echo "Checking JSON files..."
+        ls -la "$REPORT_DIR"
+
+        echo "Generating SonarQube PDF..."
+        python3 "$SCRIPT_PATH" "$REPORT_DIR" "$OUTPUT_FILE"
+
+        echo "Checking generated PDF..."
+        ls -la "$REPORT_DIR"
+
+        test -s "$REPORT_DIR/$OUTPUT_FILE"
+
+        echo "PDF generated successfully: $REPORT_DIR/$OUTPUT_FILE"
+      displayName: 'Generate SonarQube PDF Report'
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish SonarQube Report'
+      inputs:
+        PathtoPublish: '$(Build.SourcesDirectory)/sonarReport'
+        ArtifactName: 'SonarQube-Report'
+        publishLocation: 'Container'
+
+# -------------------------------
+# Stage 5 — Build, Push & Digest
+# -------------------------------
+- stage: BuildAndPush
+  displayName: "Build & Push Images"
+  dependsOn: Sonar_Scan
+  condition: succeeded()
+  jobs:
+  - job: BuildAndPush
+    displayName: "docker build/push — all self-service images"
+    steps:
+    - checkout: self
+
+    - script: |
+        if [ -f "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)" ]; then
+          for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+            value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+            echo "##vso[task.setvariable variable=$param]$value"
+          done
+        else
+          echo "Error: $(PARAMETERS_FILE) not found!"; exit 1
+        fi
+      displayName: "Read Environment Variables"
+
+    - task: AzureCLI@2
+      displayName: 'Build, Push & Record Digests (docker)'
+      inputs:
+        azureSubscription: ${{ parameters.ServiceConnection }}
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          set -euo pipefail
+
+          # Plain `docker build` + `docker push` on the agent itself,
+          # authenticated via `az acr login` — the same mechanism
+          # dsi-data-pipelines-ci.yaml already uses successfully. Deliberately
+          # NOT `az acr build`: that offloads the actual build to ACR's own
+          # managed Tasks infrastructure, which runs from ACR-side IPs outside
+          # this registry's firewall allow-list (see build 249644 — "client
+          # with IP ... is not allowed access") — an ACR network-configuration
+          # mismatch, not something fixable by adjusting this pipeline.
+          az acr login --name "$(ACR_NAME)"
+
+          mkdir -p "$(Build.ArtifactStagingDirectory)/digests"
+          DIGEST_FILE="$(Build.ArtifactStagingDirectory)/digests/dpn-self-service-digests.json"
+          echo '{}' > "$DIGEST_FILE"
+
+          build_and_push() {
+            local dockerfile="$1" image_repo="$2"
+            local full_image="$(ACR_NAME).azurecr.io/dsi/${image_repo}:$(IMAGE_TAG)"
+            FULL_IMAGE="$(ACR_NAME).azurecr.io/dsi/${image_repo}:$(IMAGE_TAG)"
+            echo "=== building ${full_image} from ${dockerfile} ==="
+            docker build -t "$full_image" -f "$dockerfile" "$(Build.SourcesDirectory)"
+            docker push "$full_image"
+
+            # RepoDigests is only populated after a push — this is the
+            # registry-assigned content digest (repo@sha256:...), not the
+            # local image ID. CD deploys by tag today; the digest is
+            # recorded here purely as an immutable audit trail of exactly
+            # what CI built and pushed for this run.
+            local digest
+            digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$full_image")
+            echo "=== digest: ${digest} ==="
+            jq --arg k "$image_repo" --arg v "$digest" '. + {($k): $v}' "$DIGEST_FILE" > "$DIGEST_FILE.tmp"
+            mv "$DIGEST_FILE.tmp" "$DIGEST_FILE"
+
+            # <<YOUR AGENT POOL>> is a persistent self-hosted pool,
+            # not a throwaway per-run VM (unlike the AWS/GCP GitHub Actions
+            # equivalents' ubuntu-latest runners) — anything left on disk
+            # here survives into the next run and accumulates indefinitely.
+            # Already pushed, so the local tag is never needed again; drop
+            # it immediately rather than waiting for the broader prune
+            # below, which only catches untagged/dangling layers.
+            docker rmi -f "$full_image" || true
+          }
+
+          # Every image name below is prefixed dpn- — matching, name-for-name,
+          # what .pipelines/github-actions-pipelines/gcp-pipelines/ci-pipelines/
+          # dpn-self-service-ci.yaml pushes to ghcr.io/energy-dsi, so these
+          # ACR images can be promoted/copied into that same GHCR namespace
+          # later with no rename step needed. Every cloud's pipeline builds
+          # and pushes identically-named images. (The AWS GitHub Actions
+          # pipeline is temporarily removed — see git history to restore it.)
+
+          # Producer — generic images, pushed only (deployed dynamically by
+          # the self-service UI, not by this pipeline).
+          build_and_push blueprints/producer/file/adaptor/Dockerfile        dpn-producer-file-adaptor-generic
+          build_and_push blueprints/producer/topic/adaptor/Dockerfile       dpn-producer-topic-adaptor-generic
+
+          # Consumer — singleton images, helm-deployed by the CD pipeline.
+          build_and_push blueprints/consumer/file/extractor/Dockerfile        dpn-consumer-file-extractor
+          build_and_push blueprints/consumer/topic/extractor/Dockerfile       dpn-consumer-topic-extractor
+
+          # Self-service UI — build context must be repo root (Dockerfile
+          # does `COPY self_service ./self_service`).
+          build_and_push service/Dockerfile dpn-self-service
+
+          echo "=== recorded digests ==="
+          cat "$DIGEST_FILE"
+
+    - task: AzureCLI@2
+      displayName: 'Clean Up Docker Build Cache'
+      condition: always()
+      inputs:
+        azureSubscription: ${{ parameters.ServiceConnection }}
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # condition: always() — runs even if the build/push step above
+          # failed partway through, so a failed run never leaves a
+          # half-built image or its intermediate layers behind either.
+          # -f (not -a): only removes dangling/untagged images and unused
+          # build cache, never anything another job on this shared agent
+          # might still be using.
+          docker image prune -f || true
+          docker builder prune -f || true
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Image Digests'
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/digests'
+        artifactName: 'dpn-self-service-digests'
+    # ---------------------------------------
+    # JFrog X-Ray Set Up
+    # ---------------------------------------
+    - task: DownloadSecureFile@1
+      displayName: Jfrog Certificate Installation
+      name: caCertificate
+      inputs:
+        secureFile: <<your specific value>>.crt
+        retryCount: '1'
+      enabled: true
+
+    - script: |
+        sudo chown root:root $(caCertificate.secureFilePath)
+        sudo chmod a+r $(caCertificate.secureFilePath)
+        sudo ln -s -f -t /etc/ssl/certs/ $(caCertificate.secureFilePath)
+        sudo cp $(caCertificate.secureFilePath) /usr/share/ca-certificates/
+        sudo apt-get -y install zip
+      enabled: true
+      displayName: Install JFrog Certificate
+
+    # ---------------------------------------
+    #  X-Ray Scan — every image this job pushed
+    # ---------------------------------------
+    # JfrogCliV2's `command:` is NOT a shell — confirmed by an actual run's
+    # log: "Unexpected JFrog CLI command prefix. Expecting the command to
+    # start with 'jf '. The command received is: set -euo pipefail". The
+    # extension execs `jf` directly per line with no shell wrapping it, so
+    # none of set -e, bash functions/loops, `docker pull`, or `>`/`|`
+    # redirection can appear inside it — only bare `jf ...` invocations,
+    # one per line. That ruled out this step's original design (a bash
+    # function looping over 5 images with `docker pull` + file redirection
+    # inline) entirely; docker pull/cleanup now happen in ordinary bash
+    # steps around a JfrogCliV2 step that contains nothing but literal `jf`
+    # commands.
+    #
+    # $(ACR_NAME)/$(IMAGE_TAG) are real pipeline variables (ACR_NAME via
+    # task.setvariable in "Read Environment Variables" above, IMAGE_TAG
+    # this pipeline's own top-level variable) — both are macro-expanded by
+    # the agent into literal text before either script below ever runs, so
+    # every image reference here is a plain string, not something bash (or
+    # jf) has to resolve at runtime. build_and_push() already
+    # `docker rmi -f`'s each image right after pushing it, so nothing built
+    # earlier in this job still exists locally — each image is re-pulled
+    # from ACR here; `az acr login`'s docker config from the Build&Push
+    # task persists on disk for the rest of this job/agent, so no re-auth
+    # is needed to pull.
+    - task: AzureCLI@2
+      displayName: 'Pull Images For X-Ray Scan'
+      inputs:
+        azureSubscription: ${{ parameters.ServiceConnection }}
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          set -euo pipefail
+          # Same 5 images build_and_push() built/pushed above — keep this
+          # list in sync with that function's own calls.
+          for image_repo in dpn-producer-file-adaptor-generic dpn-producer-topic-adaptor-generic \
+                            dpn-consumer-file-extractor dpn-consumer-topic-extractor dpn-self-service; do
+            docker pull "$(ACR_NAME).azurecr.io/dsi/${image_repo}:$(IMAGE_TAG)"
+          done
+
+    # Xray scan results are published to the JFrog platform itself
+    # (<<your specific value>>) — view the full report there, not as a build
+    # artifact here; --fail=true still fails this task (and the stage) the
+    # normal way if any image has a failing vulnerability, one `jf`
+    # invocation per image, no shell features needed for that.
+    - task: JfrogCliV2@1
+      displayName: 'Jfrog Image X-Ray Scan'
+      inputs:
+        jfrogPlatformConnection: 'xray-scan'
+        command: |
+          jf docker scan $(ACR_NAME).azurecr.io/dsi/dpn-producer-file-adaptor-generic:$(IMAGE_TAG) --vuln=true --fail=true --extended-table
+          jf docker scan $(ACR_NAME).azurecr.io/dsi/dpn-producer-topic-adaptor-generic:$(IMAGE_TAG) --vuln=true --fail=true --extended-table
+          jf docker scan $(ACR_NAME).azurecr.io/dsi/dpn-consumer-file-extractor:$(IMAGE_TAG) --vuln=true --fail=true --extended-table
+          jf docker scan $(ACR_NAME).azurecr.io/dsi/dpn-consumer-topic-extractor:$(IMAGE_TAG) --vuln=true --fail=true --extended-table
+          jf docker scan $(ACR_NAME).azurecr.io/dsi/dpn-self-service:$(IMAGE_TAG) --vuln=true --fail=true --extended-table
+
+    - task: AzureCLI@2
+      displayName: 'Cleanup Docker Images on Agent'
+      condition: always()
+      inputs:
+        azureSubscription: ${{ parameters.ServiceConnection }}
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Cleaning up images pulled for X-Ray scanning..."
+          for image_repo in dpn-producer-file-adaptor-generic dpn-producer-topic-adaptor-generic \
+                            dpn-consumer-file-extractor dpn-consumer-topic-extractor dpn-self-service; do
+            docker rmi -f "$(ACR_NAME).azurecr.io/dsi/${image_repo}:$(IMAGE_TAG)" || true
+          done
+          echo "Cleanup completed."

@@ -1,0 +1,156 @@
+# dpn-health-ca sync
+#
+# ns-dpn-dp-01's adaptor/schema_mapper pods emit OTel logs/traces/metrics
+# to dpn-otel-collector.ns-dpn-health-01, whose TLS listener presents a cert
+# signed by the internal CA in ns-dpn-health-01's `dpn-health-tls` secret
+# (key ca.crt). Without a local copy of that CA, OTEL_EXPORTER_OTLP_INSECURE
+# set to "false" fails every export with CERTIFICATE_VERIFY_FAILED /
+# "unable to get local issuer certificate" — see the 2026-09-04 investigation
+# of pn-adaptor-eqbd-sample-4.
+#
+# This mirrors manifests.yaml's dpn-tls-ca-sync exactly (same watch-not-poll
+# design — see that file for the full rationale), except: (1) the source
+# secret here also carries the collector's tls.crt/tls.key (its server
+# cert+private key), which client pods must never receive, so this only
+# ever copies the ca.crt key, into a separate destination secret
+# (dpn-health-ca) rather than reusing dpn-tls's own secret; (2) that
+# destination secret doesn't already exist (dpn-tls does, created by the
+# self-service chart), so the writer Role also grants create.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dpn-health-ca-sync
+  namespace: ns-dpn-dp-01
+---
+# Cluster-scoped for the same reason as dpn-tls-ca-sync-reader: RBAC has no
+# namespaced way to grant read access to a resource in a *different*
+# namespace. Scoped down via resourceNames to only "dpn-health-tls".
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dpn-health-ca-sync-reader
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["dpn-health-tls"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dpn-health-ca-sync-reader-binding
+subjects:
+  - kind: ServiceAccount
+    name: dpn-health-ca-sync
+    namespace: ns-dpn-dp-01
+roleRef:
+  kind: ClusterRole
+  name: dpn-health-ca-sync-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# Namespaced — write access is only ever needed inside ns-dpn-dp-01,
+# where this job's own target secret (dpn-health-ca) lives. "create" is
+# needed (unlike dpn-tls-ca-sync-writer's get/patch) because dpn-health-ca
+# doesn't pre-exist; resourceNames has no effect on "create" but is kept
+# for the get/patch verbs it does constrain.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dpn-health-ca-sync-writer
+  namespace: ns-dpn-dp-01
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["dpn-health-ca"]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dpn-health-ca-sync-writer-binding
+  namespace: ns-dpn-dp-01
+subjects:
+  - kind: ServiceAccount
+    name: dpn-health-ca-sync
+    namespace: ns-dpn-dp-01
+roleRef:
+  kind: Role
+  name: dpn-health-ca-sync-writer
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpn-health-ca-sync
+  namespace: ns-dpn-dp-01
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dpn-health-ca-sync
+  template:
+    metadata:
+      labels:
+        app: dpn-health-ca-sync
+    spec:
+      serviceAccountName: dpn-health-ca-sync
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: sync
+          image: alpine/k8s:1.29.2
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          command:
+            - sh
+            - -ec
+            - |
+              sync_once() {
+                # Only ever read/write the ca.crt key — tls.crt/tls.key
+                # (the collector's own server cert+private key) never
+                # leave ns-dpn-health-01.
+                SRC_CA=$(kubectl get secret dpn-health-tls -n ns-dpn-health-01 -o jsonpath='{.data.ca\.crt}')
+                if kubectl get secret dpn-health-ca -n ns-dpn-dp-01 >/dev/null 2>&1; then
+                  DST_CA=$(kubectl get secret dpn-health-ca -n ns-dpn-dp-01 -o jsonpath='{.data.ca\.crt}')
+                  if [ "$SRC_CA" != "$DST_CA" ]; then
+                    kubectl patch secret dpn-health-ca -n ns-dpn-dp-01 --type merge -p "{\"data\": {\"ca.crt\": \"$SRC_CA\"}}"
+                    echo "$(date -u +%FT%TZ) dpn-health-ca synced: ns-dpn-health-01/dpn-health-tls -> ns-dpn-dp-01/dpn-health-ca (content changed)"
+                  fi
+                else
+                  kubectl create secret generic dpn-health-ca -n ns-dpn-dp-01 \
+                    --from-literal=ca.crt="$(echo "$SRC_CA" | base64 -d)"
+                  echo "$(date -u +%FT%TZ) dpn-health-ca created: ns-dpn-health-01/dpn-health-tls -> ns-dpn-dp-01/dpn-health-ca"
+                fi
+              }
+
+              # Reconcile once on startup (covers drift/absence from before
+              # this pod was running), then block on a real API-server watch
+              # — every loop iteration corresponds to an actual
+              # ADDED/MODIFIED event on the source secret, never a timer
+              # tick. The watch is re-established if it drops (the
+              # apiserver closes watches after ~30-60m by design), so this
+              # runs forever with zero polling in between events.
+              sync_once
+              while true; do
+                kubectl get secret dpn-health-tls -n ns-dpn-health-01 -o name --watch-only |
+                  while read -r _; do sync_once; done
+                echo "$(date -u +%FT%TZ) watch connection closed, reconnecting..."
+                sleep 2
+              done

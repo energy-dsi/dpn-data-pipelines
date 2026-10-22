@@ -1,0 +1,107 @@
+{{- if .Values.oauth2Proxy.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.name }}-oauth2-proxy
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ .Values.name }}-oauth2-proxy
+data:
+  # Secrets are deliberately absent from this file — client_secret and
+  # cookie_secret arrive as OAUTH2_PROXY_* env vars from a Secret instead
+  # (see templates/oauth2-proxy-deployment.yaml), so this ConfigMap stays
+  # safe to read with `kubectl get cm -o yaml`.
+  oauth2-proxy.cfg: |
+    {{- if .Values.oauth2Proxy.tls.enabled }}
+    # HTTPS via the shared dpn-tls cert (see oauth2Proxy.tls in
+    # values.yaml) — setting tls_cert_file drops oauth2-proxy's plain-HTTP
+    # listener entirely, matching dpn-health-monitoring-service's
+    # charts/oauth2-proxy/templates/configmap.yaml.
+    https_address = "0.0.0.0:{{ .Values.oauth2Proxy.tls.servicePort }}"
+    tls_cert_file = "{{ .Values.oauth2Proxy.tls.certFile }}"
+    tls_key_file = "{{ .Values.oauth2Proxy.tls.keyFile }}"
+    {{- else }}
+    # Plain HTTP — this UI is only reachable via the namespace's own
+    # internal Azure LB, with no ingress/TLS in front of it (see
+    # oauth2Proxy.servicePort in values.yaml).
+    http_address = "0.0.0.0:4180"
+    {{- end }}
+
+    provider = "keycloak-oidc"
+    client_id = "{{ .Values.oauth2Proxy.keycloak.clientId }}"
+
+    # Split-horizon Keycloak, with no KC_HOSTNAME pinned — every URL is
+    # chosen per caller rather than trusted from discovery. See
+    # self-service.issuerUrl in templates/_helpers.tpl for why
+    # oidc_issuer_url tracks the INTERNAL url even though login_url is the
+    # public one.
+    oidc_issuer_url = "{{ include "self-service.issuerRealmUrl" . }}"
+    skip_oidc_discovery = true
+    login_url = "{{ include "self-service.keycloakRealmUrl" . }}/protocol/openid-connect/auth"
+    redeem_url = "{{ include "self-service.keycloakInternalRealmUrl" . }}/protocol/openid-connect/token"
+    oidc_jwks_url = "{{ include "self-service.keycloakInternalRealmUrl" . }}/protocol/openid-connect/certs"
+
+    # Keycloak (no reverse proxy in front of it here) always stamps a
+    # token's `iss` claim from whichever host answered the user's initial
+    # /auth request — the PUBLIC url — even for this proxy's own later,
+    # direct redeem/JWKS calls against the INTERNAL url above (KC_HOSTNAME
+    # v2's --hostname-backchannel-dynamic only overrides that per-request
+    # via a trusted X-Forwarded-Host, which a direct in-cluster call never
+    # sends). So `iss` is always the public url, never the internal one
+    # oidc_issuer_url is pinned to above. Every endpoint here is already
+    # explicit (skip_oidc_discovery) and CA-pinned (provider_ca_files), so
+    # skipping the redundant string-equality check on `iss` gives up
+    # nothing this setup already relies on for trust.
+    insecure_oidc_skip_issuer_verification = true
+
+    # Trust the DPN CA for the redeem/JWKS calls above — extracted from
+    # dpn-tls's password-protected truststore.jks by this Deployment's
+    # extract-certs initContainer (see oauth2-proxy-deployment.yaml),
+    # since oauth2-proxy has no PKCS12 support of its own.
+    provider_ca_files = ["/etc/kafka/secrets/ca.crt"]
+    {{- if .Values.oauth2Proxy.keycloak.insecureSkipVerify }}
+
+    # Keycloak's certificate does not carry a SAN for its in-cluster name.
+    ssl_insecure_skip_verify = true
+    {{- end }}
+
+    redirect_url = "{{ include "self-service.oauth2ProxyExternalUrl" . }}/oauth2/callback"
+
+    # Every host oauth2-proxy may send the browser to via an `rd` parameter.
+    #   1. this proxy's own host — post-login "back to where you were"
+    #   2. Keycloak's browser-facing host — required for logout: service
+    #      /auth.py's logout_url() sends /oauth2/sign_out?rd=<Keycloak
+    #      end-session URL>, since skip_oidc_discovery=true means this proxy
+    #      never learns end_session_endpoint and cannot end the SSO session
+    #      itself. Without Keycloak listed here, sign_out drops that rd and
+    #      the user is transparently re-authenticated from the still-live
+    #      Keycloak session.
+    whitelist_domains = ["{{ include "self-service.oauth2ProxyExternalHost" . }}", "{{ include "self-service.keycloakPublicHost" . }}"]
+    scope = "{{ .Values.oauth2Proxy.keycloak.scope }}"
+
+    # RBAC gate: only these realm roles get through. The claim is "roles",
+    # not oauth2-proxy's "groups" default — this realm carries realm roles
+    # in a custom claim via the realm-roles-claim protocol mapper.
+    oidc_groups_claim = "roles"
+    allowed_groups = [{{ range $i, $r := .Values.oauth2Proxy.keycloak.allowedRoles }}{{ if $i }}, {{ end }}"{{ $r }}"{{ end }}]
+    email_domains = ["*"]
+    insecure_oidc_allow_unverified_email = true
+    skip_provider_button = true
+
+    # Forward the authenticated identity to service/auth.py, which
+    # narrows dpnreader to a read-only view server-side — the allowed_groups
+    # check above only gets a user past the login screen.
+    pass_user_headers = true
+    pass_basic_auth = false
+    user_id_claim = "preferred_username"
+
+    upstreams = ["http://{{ .Values.name }}.{{ .Values.namespace }}.svc.cluster.local:{{ .Values.servicePort }}/"]
+
+    cookie_name = "{{ .Values.oauth2Proxy.cookie.name }}"
+    # A Secure cookie is only sent back over HTTPS — matches whichever
+    # listener is actually active above.
+    cookie_secure = {{ .Values.oauth2Proxy.tls.enabled }}
+    cookie_samesite = "{{ .Values.oauth2Proxy.cookie.samesite }}"
+    cookie_expire = "{{ .Values.oauth2Proxy.cookie.expire }}"
+    cookie_refresh = "{{ .Values.oauth2Proxy.cookie.refresh }}"
+{{- end }}

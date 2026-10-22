@@ -1,0 +1,241 @@
+name: DPN Uninstall - Self-Service Data Pipelines
+
+# Uninstalls the Helm releases dpn-self-service-cd deploys into
+# ns-dpn-dp-01: the self-service UI and the two consumer singletons.
+# Producer Deployments the UI creates dynamically (service/k8s_ops.py) are
+# plain kubectl objects, not Helm releases — they are NOT touched here and
+# keep running until deleted from the UI (or the namespace is torn down).
+# The old per-schema-type releases in ns-dpn-01 are handled by
+# dpn-uninstall-all-components.yml, not this workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select Environment"
+        required: true
+        default: "test"
+        type: choice
+        options:
+          - dev
+          - test
+
+      cluster:
+        description: "Target DPN Cluster"
+        required: true
+        default: "dpn01"
+        type: choice
+        options:
+          - dpn01
+          - dpn02
+
+      cloud:
+        description: "Target Cloud Provider"
+        required: true
+        default: "aws"
+        type: choice
+        options:
+          - aws
+          - azure
+          - gcp
+
+      release_name:
+        description: >-
+          Helm release to uninstall, or 'all' for the UI followed by both
+          consumer singletons.
+        required: true
+        default: "dpn-self-service"
+        type: choice
+        options:
+          - dpn-self-service
+          - dpn-consumer-file-extractor
+          - dpn-consumer-topic-extractor
+          - all
+
+      confirm:
+        description: >-
+          CONFIRM: retype the "release_name" value selected above, exactly
+          (e.g. "dpn-self-service" or "all").
+        required: true
+        type: string
+
+env:
+  PARAMETERS_FILE: .github/config/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.json
+  PRODUCER_NAMESPACE: ns-dpn-dp-01
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  uninstall:
+    name: Helm Uninstall
+    runs-on: [self-hosted, vmss]
+    # Single approval gate: configure required reviewers on the
+    # <environment>-<cluster> GitHub Environment.
+    environment: ${{ inputs.environment }}-${{ inputs.cluster }}
+    steps:
+      - name: Validate Confirmation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.confirm }}" != "${{ inputs.release_name }}" ]]; then
+            echo "ERROR: confirmation text '${{ inputs.confirm }}' does not match release_name '${{ inputs.release_name }}'."
+            echo "Aborting — nothing was touched."
+            exit 1
+          fi
+          echo "Confirmation matched. Proceeding with release_name=${{ inputs.release_name }}"
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Read Deployment Config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "${PARAMETERS_FILE}" ]; then
+            echo "ERROR: ${PARAMETERS_FILE} not found!"
+            exit 1
+          fi
+
+          echo "Loading config from ${PARAMETERS_FILE}"
+          for key in $(jq -r 'keys_unsorted[]' "${PARAMETERS_FILE}"); do
+            value=$(jq -r ".\"$key\"" "${PARAMETERS_FILE}")
+            echo "${key}<<EOF" >> "$GITHUB_ENV"
+            echo "${value}" >> "$GITHUB_ENV"
+            echo "EOF" >> "$GITHUB_ENV"
+            echo "Set ${key}"
+          done
+
+      # Fail fast if this cloud/environment/cluster isn't onboarded yet
+      # (config still holds placeholder values).
+      - name: Validate Cloud Setup
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -q '"TODO"' "${PARAMETERS_FILE}"; then
+            echo "::error::${PARAMETERS_FILE} still contains TODO placeholder values — this cloud/environment isn't onboarded yet."
+            exit 1
+          fi
+          echo "Config for ${{ inputs.cloud }} / ${{ inputs.environment }}-${{ inputs.cluster }} has no placeholder values."
+
+      - name: Pre-Uninstall Checklist
+        shell: bash
+        run: |
+          echo "CONFIRM BEFORE PROCEEDING:"
+          echo "1. Release: ${{ inputs.release_name }}  Namespace: $PRODUCER_NAMESPACE"
+          echo "2. No business users are actively creating/managing data products through the UI"
+          echo "3. Consumer singletons: no in-flight files/messages will be stranded"
+          echo "4. The UI's registry PVC (dpn-self-service-data) is deleted with its release — service/registry_backup.py mirrors the registry to cloud storage; confirm that backup is current"
+          echo "5. Reinstalling may assign a new LoadBalancer address; a new one means re-registering the Keycloak redirect URIs"
+          echo "6. Data-product producer Deployments created from the UI are NOT removed by this workflow"
+
+      - name: Cloud Login
+        uses: ./.github/actions/cloud-login
+        with:
+          cloud: ${{ inputs.cloud }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-account-id: ${{ env.AWS_ACCOUNT_ID }}
+          eks-cluster: ${{ env.EKS_CLUSTER }}
+          gcp-project-id: ${{ env.GCP_PROJECT_ID }}
+          gcp-region: ${{ env.GCP_REGION }}
+          gke-cluster: ${{ env.GKE_CLUSTER }}
+          gcp-workload-identity-provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          gcp-service-account: ${{ env.GCP_SERVICE_ACCOUNT }}
+
+      - name: Preview Helm Releases (read-only)
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "Releases in $PRODUCER_NAMESPACE:"
+          helm list -n "$PRODUCER_NAMESPACE"
+
+          if [[ "${{ inputs.release_name }}" == "all" ]]; then
+            TARGETS=(dpn-self-service dpn-consumer-file-extractor dpn-consumer-topic-extractor)
+          else
+            TARGETS=("${{ inputs.release_name }}")
+          fi
+          for r in "${TARGETS[@]}"; do
+            echo ""
+            echo "Current status of $r:"
+            helm status "$r" -n "$PRODUCER_NAMESPACE" || echo "Release $r not found — nothing to uninstall."
+          done
+
+          # Data-product producers created from the UI are plain Deployments,
+          # not Helm releases: uninstalling the UI leaves them running, but
+          # they can no longer be managed from it.
+          PRODUCERS=$(kubectl get deployments -n "$PRODUCER_NAMESPACE" -o name 2>/dev/null | sed 's#.*/##' | grep -E '^dpn-producer-' || true)
+          if [ -n "$PRODUCERS" ] && printf '%s\n' "${TARGETS[@]}" | grep -qx 'dpn-self-service'; then
+            echo ""
+            echo "::warning::Data-product producers created from the UI exist and will KEEP RUNNING after this uninstall, but can no longer be managed from the UI:"
+            echo "$PRODUCERS" | sed 's/^/  - /'
+          fi
+
+          echo "NO resources have been deleted in this step."
+
+      - name: Helm Uninstall
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # UI first (stops new data-product activity), then the consumer singletons.
+          if [[ "${{ inputs.release_name }}" == "all" ]]; then
+            TARGETS=(dpn-self-service dpn-consumer-file-extractor dpn-consumer-topic-extractor)
+          else
+            TARGETS=("${{ inputs.release_name }}")
+          fi
+
+          DONE=(); SKIPPED=(); FAILED=()
+
+          for r in "${TARGETS[@]}"; do
+            echo ""
+            echo "======================================================================"
+            echo "Release: $r"
+            echo "======================================================================"
+
+            if ! helm status "$r" -n "$PRODUCER_NAMESPACE" >/dev/null 2>&1; then
+              echo "Release $r not found in $PRODUCER_NAMESPACE — skipping."
+              SKIPPED+=("$r")
+              continue
+            fi
+
+            if helm uninstall "$r" -n "$PRODUCER_NAMESPACE" --wait --timeout 10m; then
+              echo "Uninstalled $r"
+              DONE+=("$r")
+            else
+              echo "ERROR: uninstall of '$r' failed."
+              FAILED+=("$r")
+            fi
+          done
+
+          echo ""
+          echo "======================================================================"
+          echo "Uninstall summary (release_name=${{ inputs.release_name }})"
+          echo "======================================================================"
+          echo "Uninstalled (${#DONE[@]}): ${DONE[*]:-none}"
+          echo "Skipped - not found (${#SKIPPED[@]}): ${SKIPPED[*]:-none}"
+          if [ "${#FAILED[@]}" -gt 0 ]; then
+            echo "Failed (${#FAILED[@]}): ${FAILED[*]}"
+            exit 1
+          fi
+
+      - name: Verification
+        shell: bash
+        run: |
+          echo "Using namespace: $PRODUCER_NAMESPACE"
+
+          echo "Helm Releases:"
+          helm list -n "$PRODUCER_NAMESPACE"
+
+          echo "Deployments:"
+          kubectl get deployments -n "$PRODUCER_NAMESPACE"
+
+          echo "Pods:"
+          kubectl get pods -n "$PRODUCER_NAMESPACE"
+
+          echo "Services:"
+          kubectl get svc -n "$PRODUCER_NAMESPACE"

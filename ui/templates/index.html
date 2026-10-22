@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% from "_icons.html" import consumers as consumers_icon, add %}
+
+{% block title %}DPN Data Products{% endblock %}
+
+{% block content %}
+  {% include "_toast.html" %}
+
+  <div class="dpn-page-header">
+    <span class="dpn-page-header__icon">{{ consumers_icon() }}</span>
+    <div>
+      <h1>DPN Data Products</h1>
+      <p>Create, manage and monitor your data product pipelines</p>
+    </div>
+  </div>
+
+  <nav class="dpn-tabs">
+    <a class="dpn-tab {% if active == 'producer' %}is-active{% endif %}" href="/producer-pipelines" title="Producer Pipelines">Producer Pipelines</a>
+    <a class="dpn-tab {% if active == 'consumer' %}is-active{% endif %}" href="/consumer-pipelines" title="Consumer Pipelines">Consumer Pipelines</a>
+    <a class="dpn-tab {% if active == 'history' %}is-active{% endif %}" href="/run-history?role=producer&amp;limit=50" title="Run History">Run History</a>
+  </nav>
+
+  <h2 style="margin: 0 0 6px; font-size: 22px; font-weight: 500;">DPN Data Products</h2>
+  <p style="margin: 0 0 20px; color: var(--dpn-text-secondary); font-size: 15px;">
+    Set up, run, update and monitor your producer data pipelines.
+    <a href="https://github.com/energy-dsi/dpn-integration-playbook" target="_blank" rel="noopener" style="text-decoration: underline;">See more</a>
+  </p>
+
+  {% if is_operator %}
+  <a class="dpn-btn dpn-btn--primary" href="/create-new-data-product" style="margin-bottom: 20px;">Create New Data Product{{ add() }}</a>
+  {% endif %}
+
+  <div class="dpn-table-wrap">
+  <table class="dpn-table" data-paginate="20">
+    <thead>
+      <tr>
+        <th>Product</th>
+        <th>Org</th>
+        <th>Pathway</th>
+        <th>Cloud</th>
+        <th>Schedule (s)</th>
+        <th>Adaptor</th>
+        <th>Execution</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      {# gone: both containers actually absent (e.g. deleted straight via
+         kubectl, bypassing this app's own Stop) even though the registry's
+         is_active flag below may still say True — is_active is this app's
+         own bookkeeping, not a live check, so the two can disagree. Dims
+         the row as a visual flag; Stop stays enabled either way (it's what
+         reconciles is_active back to False, which is what puts Start back
+         on this row next reload — see runtime.stop()/launch()'s 404
+         tolerance on either side of that). #}
+      {# Every pathway is single-container now — both adaptors absorbed
+         their own schema mapper stage (see service/k8s_ops.py's status()),
+         so "gone" only ever depends on the one adaptor Deployment. #}
+      {% set gone = row.status.adaptor == "absent" and row.product.is_active %}
+      <tr class="{% if gone %}gone{% endif %}">
+        <td>{{ row.product.product_type }}</td>
+        <td>{{ row.product.org_name }}</td>
+        <td>{{ row.product.pipeline_type }}</td>
+        <td>{{ row.product.cloud_provider }}</td>
+        <td>{{ row.product.schedule_seconds }}</td>
+        <td><span class="dpn-badge {{ row.status.adaptor }}">{{ row.status.adaptor }}</span></td>
+        <td><span class="dpn-badge {{ row.product.execution_mode }}">{{ row.product.execution_mode }}</span></td>
+        <td class="dpn-actions">
+          <a class="dpn-btn dpn-btn--action" href="/data-products/{{ row.product.product_type }}/logs" title="View logs for {{ row.product.product_type }}">View Logs</a>
+          <a class="dpn-btn dpn-btn--action" href="/run-history?product_type={{ row.product.product_type }}" title="View run history for {{ row.product.product_type }}">View History</a>
+          {% if is_operator %}
+          {% if row.product.is_active %}
+          <form method="post" action="/data-products/{{ row.product.product_type }}/run">
+            <button
+              class="dpn-btn dpn-btn--action"
+              type="submit"
+              {% if row.product.execution_mode != "manual" or gone %}disabled{% endif %}
+              title="{% if gone %}Not running — deleted outside this UI. Click Stop to clear it, then Start to relaunch.{% elif row.product.execution_mode == 'manual' %}Runs one cycle right now, independent of the schedule. See Run History for the result.{% else %}Set Execution to manual below to enable this.{% endif %}"
+            >Run Now</button>
+          </form>
+          <form method="post" action="/data-products/{{ row.product.product_type }}/stop">
+            <button class="dpn-btn dpn-btn--action" type="submit" title="{% if gone %}Already gone on the cluster — clears this row's active state so Start reappears.{% endif %}">Stop</button>
+          </form>
+          <form method="post"
+                onsubmit="this.action = '/data-products/{{ row.product.product_type }}/' + (this.mode.value === 'manual' ? 'pause' : 'resume');">
+            <select class="dpn-select" name="mode" title="automatic runs every {{ row.product.schedule_seconds }}s on its own; manual only runs via Run Now.">
+              <option value="automatic" {% if row.product.execution_mode == "automatic" %}selected{% endif %}>automatic</option>
+              <option value="manual" {% if row.product.execution_mode == "manual" %}selected{% endif %}>manual</option>
+            </select>
+            <button class="dpn-btn dpn-btn--action" type="submit">Apply</button>
+          </form>
+          {% else %}
+          <form method="post" action="/data-products/{{ row.product.product_type }}/start">
+            <button class="dpn-btn dpn-btn--action" type="submit">Start</button>
+          </form>
+          {% endif %}
+          {% endif %}
+          {% if is_admin %}
+          <form method="post" action="/data-products/{{ row.product.product_type }}/delete"
+                class="dpn-confirm-form"
+                data-confirm-title="Are you sure you want to delete {{ row.product.product_type }} permanently?">
+            <button class="dpn-btn dpn-btn--danger" type="submit">Delete</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8">No data products yet — create one above.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="/static/js/toast.js"></script>
+{% endblock %}

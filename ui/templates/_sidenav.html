@@ -1,0 +1,39 @@
+{#
+Collapsible side navigation — mirrors the "Side Navigation" frame in the
+Figma file (node 5995:114581): a collapse toggle, then a list of
+app-level links ("Home", "Users & Roles", "Data Products"). The
+Producer/Consumer/Run History switch stays where it already lives (the
+in-page .dpn-tabs row each page renders itself) rather than being
+duplicated here, since Figma's own sidenav items are a level above those
+tabs, not another way to reach them — "Data Products" is wired to this
+app's own route, while "Users & Roles" is the surrounding Keycloak admin
+console's, so it links out to that console instead.
+#}
+{% from "_icons.html" import chevron, home, consumers as users_icon, document %}
+<nav class="dpn-sidenav" id="dpn-sidenav">
+  <button type="button" class="dpn-sidenav__toggle" id="dpn-sidenav-toggle" aria-expanded="true">
+    <span class="dpn-sidenav__toggle-label" id="dpn-sidenav-toggle-label">Collapse side panel</span>
+    <span class="dpn-sidenav__toggle-icon">{{ chevron() }}</span>
+  </button>
+
+  <ul class="dpn-sidenav__list">
+    <li>
+      <a class="dpn-sidenav__link" href="https://dpn-observability.ns-dpn-health-01.svc.cluster.local:8443" title="Home">
+        {{ home() }}<span class="dpn-sidenav__link-label">Home</span>
+      </a>
+    </li>
+    {% if is_admin %}
+    <li>
+      <a class="dpn-sidenav__link" href="https://dpn-keycloak-service-lb.ns-dpn-01.svc.cluster.local:8443/admin/dpn-realm/console" title="Managed in the admin console" target="_blank" rel="noopener noreferrer">
+        {{ users_icon() }}<span class="dpn-sidenav__link-label">Users &amp; Roles</span>
+      </a>
+    </li>
+    {% endif %}
+    <li>
+      <a class="dpn-sidenav__link is-active" href="/producer-pipelines" title="Data Products">
+        <span class="dpn-sidenav__link-label">Data Products</span>
+        <span class="dpn-sidenav__link-badge">{{ document() }}</span>
+      </a>
+    </li>
+  </ul>
+</nav>

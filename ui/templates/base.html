@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}DPN Self-Service{% endblock %}</title>
+  <link rel="icon" href="/static/img/favicon.png" type="image/png" sizes="any">
+  <link rel="apple-touch-icon" href="/static/img/favicon.png">
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/layout.css">
+  <link rel="stylesheet" href="/static/css/pagination.css">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <div class="dpn-shell">
+    {% include "_header.html" %}
+    <div class="dpn-body">
+      {% include "_sidenav.html" %}
+      <main class="dpn-main">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+    {% include "_footer.html" %}
+  </div>
+  {% include "_confirm_modal.html" %}
+  <script src="/static/js/sidenav.js"></script>
+  <script src="/static/js/form-validation.js"></script>
+  <script src="/static/js/button-loading.js"></script>
+  <script src="/static/js/table-pagination.js"></script>
+  <script src="/static/js/confirm-modal.js"></script>
+  <script src="/static/js/run-history.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

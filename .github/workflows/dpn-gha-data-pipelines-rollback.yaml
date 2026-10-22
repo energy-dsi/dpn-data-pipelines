@@ -1,0 +1,169 @@
+name: DPN Rollback - Data Pipelines
+
+# Matches the real ADO dpn-data-pipeline-rollback.yaml: releases are created
+# dynamically per product (productType/schemaType), so there is no fixed
+# release list — release_name is free text, same as there.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select Environment"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - test
+
+      cluster:
+        description: "Target DPN Cluster"
+        required: true
+        default: "dpn01"
+        type: choice
+        options:
+          - dpn01
+          - dpn02
+
+      cloud:
+        description: "Target Cloud Provider"
+        required: true
+        default: "aws"
+        type: choice
+        options:
+          - azure
+          - aws
+
+      releaseName:
+        description: "The Helm release name to roll back (check 'helm list' for the exact name — e.g. producer-eq-sample-1-adaptor)"
+        required: true
+        type: string
+
+      targetRevision:
+        description: >-
+          Revision to roll back to. "0" (default) = the previous stable
+          revision, auto-resolved. Or a specific revision number from
+          "helm history <release>".
+        required: true
+        default: "0"
+        type: string
+
+      confirm:
+        description: 'Type the releaseName value again to confirm (exact match)'
+        required: true
+        type: string
+
+env:
+  PARAMETERS_FILE: .github/config/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.json
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  rollback:
+    name: Helm Rollback - Data Pipelines
+    runs-on: [self-hosted, vmss]
+    environment: ${{ inputs.environment }}-${{ inputs.cluster }}
+    steps:
+      - name: Validate Confirmation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.confirm }}" != "${{ inputs.releaseName }}" ]]; then
+            echo "ERROR: confirmation text '${{ inputs.confirm }}' does not match releaseName '${{ inputs.releaseName }}'."
+            exit 1
+          fi
+
+      - name: Validate Revision Format
+        shell: bash
+        run: |
+          set -euo pipefail
+          REV="${{ inputs.targetRevision }}"
+          if ! echo "$REV" | grep -Eq '^[0-9]+$'; then
+            echo "ERROR: targetRevision '$REV' is not a non-negative integer."
+            exit 1
+          fi
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Read Deployment Config
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f "${PARAMETERS_FILE}" ]; then
+            echo "ERROR: ${PARAMETERS_FILE} not found!"
+            exit 1
+          fi
+          for key in $(jq -r 'keys_unsorted[]' "${PARAMETERS_FILE}"); do
+            value=$(jq -r ".\"$key\"" "${PARAMETERS_FILE}")
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+          done
+
+      - name: Cloud Login
+        uses: ./.github/actions/cloud-login
+        with:
+          cloud: ${{ inputs.cloud }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-account-id: ${{ env.AWS_ACCOUNT_ID }}
+          eks-cluster: ${{ env.EKS_CLUSTER }}
+
+      - name: Helm Rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RELEASE="${{ inputs.releaseName }}"
+
+          if ! helm status "$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1; then
+            echo "::error::Release '$RELEASE' not found in namespace '$NAMESPACE'. Nothing to roll back."
+            exit 1
+          fi
+
+          echo "--- Release history (before rollback) ---"
+          helm history "$RELEASE" -n "$NAMESPACE"
+
+          HISTORY_JSON=$(helm history "$RELEASE" -n "$NAMESPACE" -o json)
+          TARGET_REVISION="${{ inputs.targetRevision }}"
+
+          if [[ "$TARGET_REVISION" == "0" ]]; then
+            REV=$(echo "$HISTORY_JSON" | jq -r '
+              map(select(.status=="deployed" or .status=="superseded")) | .[-2].revision // empty
+            ')
+            if [[ -z "$REV" ]]; then
+              echo "::error::'$RELEASE' has no previous deployed/superseded revision to roll back to."
+              exit 1
+            fi
+            echo "Resolved 'previous stable' revision: $REV"
+          else
+            REV="$TARGET_REVISION"
+          fi
+
+          STATUS=$(echo "$HISTORY_JSON" | jq -r --arg rev "$REV" '.[] | select(.revision == ($rev|tonumber)) | .status')
+          if [[ -z "$STATUS" ]]; then
+            echo "::error::Revision '$REV' does not exist in history for '$RELEASE'."
+            exit 1
+          fi
+          if [[ "$STATUS" != "deployed" && "$STATUS" != "superseded" ]]; then
+            echo "::error::Revision '$REV' has status '$STATUS'. Rollback blocked."
+            exit 1
+          fi
+
+          echo "--- Dry run ---"
+          helm rollback "$RELEASE" "$REV" -n "$NAMESPACE" --dry-run
+
+          echo "--- Executing rollback ---"
+          helm rollback "$RELEASE" "$REV" -n "$NAMESPACE" --wait --timeout 10m
+
+          echo "--- Release history (after rollback) ---"
+          helm history "$RELEASE" -n "$NAMESPACE"
+
+      - name: Verification
+        shell: bash
+        run: |
+          helm status "${{ inputs.releaseName }}" -n "$NAMESPACE"
+          helm history "${{ inputs.releaseName }}" -n "$NAMESPACE" | tail -n 3
+          kubectl get pods -n "$NAMESPACE"

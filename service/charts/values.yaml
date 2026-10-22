@@ -1,0 +1,263 @@
+namespace: ns-dpn-dp-01
+name: dpn-self-service
+
+acrName: ""
+# See consumer/file/extractor/charts/values.yaml's matching keys — overrides
+# the ACR-shaped default entirely when set (e.g. <<your specific value>> for AWS EKS).
+imageRegistry: ""
+imagePullSecretName: ""
+imageName: dpn-self-service
+imageTag: latest
+
+replicaCount: 1
+servicePort: 8000
+
+# The namespace this UI is allowed to create/delete adaptor/schema_mapper
+# Deployments in. Defaults to its own namespace (simplest RBAC — see
+# templates/rbac.yaml); set separately if producer workloads should live in
+# a different namespace than the UI itself.
+producerNamespace: ns-dpn-dp-01
+
+# Consumed by service/k8s_ops.py — see service/env_builder.py for
+# the Kafka/storage side (still local-demo defaults there; override via
+# DPN_BOOTSTRAP_SERVER etc. below for a real cluster).
+#
+# NOTE: these become the Kafka/OAuth config for every dynamically-launched
+# adaptor/schema_mapper Deployment too (env_builder.common_env() forwards
+# them straight through) — leaving DPN_KAFKA_SASL_MECHANISM/DPN_KAFKA_OAUTH_*
+# unset here reproduces the `sasl.oauthbearer.token.endpoint.url is
+# mandatory` crash from utils/kafka_security.py, the same failure mode
+# .docs/kafka-auth-modes.md documents for the static per-product charts.
+env:
+  DPN_RUNTIME: kubernetes
+  DPN_NAMESPACE: ns-dpn-dp-01
+  DPN_IMAGE_REGISTRY: ""   # e.g. <<CONTAINER_REGISTRY_URL>>/dsi — set via --set at deploy time
+  DPN_IMAGE_TAG: latest
+  DPN_BOOTSTRAP_SERVER: dpn-kafka-src.ns-dpn-01.svc.cluster.local:9092
+  DPN_KAFKA_SECURITY_PROTOCOL: SASL_SSL
+  DPN_KAFKA_SASL_MECHANISM: OAUTHBEARER
+  DPN_KAFKA_OAUTH_CLIENT_ID: dpn-service-client
+  DPN_KAFKA_OAUTH_TOKEN_ENDPOINT_URL: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
+  # DPN_KAFKA_OAUTH_CLIENT_SECRET is deliberately not listed here — see
+  # kafkaOauthSecretName below, injected via secretKeyRef like every other
+  # chart's KC_SERVICE_CLIENT_SECRET (never a literal in values.yaml).
+  DPN_KAFKA_TLS_SECRET_NAME: dpn-tls
+  DPN_OTEL_EXPORTER_OTLP_ENDPOINT: dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4318
+  # The collector's otlp receiver only has a tls: block under its http
+  # protocol (4318) — grpc (4317, the previous default here) is plaintext
+  # and has no oidc auth extension wired onto it either. INSECURE=false
+  # paired with the :4318 endpoint above matches every blueprint chart
+  # (e.g. blueprints/producer/file/adaptor/charts/values.yaml) — a
+  # plaintext gRPC exporter against the old :4317 endpoint would dial the
+  # wrong port entirely if this were left "true" with the port bumped.
+  # DPN_OTEL_TLS_SECRET_NAME below is DEFAULT_TRUSTSTORE_PATH's fallback
+  # only; k8s_ops.py already mounts dpn-tls's truststore.jks (
+  # KAFKA_TLS_SECRET_NAME) at /etc/secrets/truststore.jks for every spawned
+  # product pod, and otlp_truststore.configure() prefers that over this one
+  # — see its own module docstring for why.
+  DPN_OTEL_EXPORTER_OTLP_INSECURE: "false"
+  # Set true to skip the Keycloak client-credentials OAuth grant (e.g. a
+  # collector with no oidc_auth extension). Falls back to the
+  # DPN_KAFKA_OAUTH_CLIENT_ID/_CLIENT_SECRET/_TOKEN_ENDPOINT_URL values
+  # above when unset — no separate OTel credentials needed.
+  DPN_OTEL_OAUTH_DISABLED: "false"
+  # Requires charts/tls-ca-sync/health-manifests.yaml deployed in this
+  # namespace, syncing dpn-health-tls's ca.crt from ns-dpn-health-01 into
+  # this secret — see that file and env_builder.OTEL_TLS_SECRET_NAME.
+  DPN_OTEL_TLS_SECRET_NAME: dpn-health-ca
+  # Platform-level organisation + cloud provider (FR-D-016m-05/-06) — one
+  # of each per self-service deployment, applied to every data product
+  # automatically (service/env_builder.py's PLATFORM_ORG_NAME /
+  # PLATFORM_CLOUD_PROVIDER). Neither is a secret, so both are plain
+  # values here; the actual storage credentials for whichever provider
+  # this names come from platformStorageSecretName below instead.
+  DPN_ORG_NAME: dpn
+  DPN_CLOUD_PROVIDER: aws   # aws | azure | gcp
+  # Run History retention (service/run_history.py) — keep at most this many
+  # runs, or only the last this many days of them, whichever is more
+  # restrictive. Read once at self-service startup.
+  DPN_RUN_HISTORY_MAX_RECORDS: "100"
+  DPN_RUN_HISTORY_MAX_AGE_DAYS: "30"
+
+# Storage settings that legitimately vary per environment (region,
+# S3-compatible endpoint for a real AWS deployment) — kept out of the
+# literal env: map above and instead populate the {{ .Values.name }}-aws-
+# config ConfigMap (templates/configmap.yaml), read via configMapKeyRef in
+# templates/deployment.yaml. This lets an operator `kubectl edit configmap
+# dpn-self-service-aws-config` + restart the pod to change region/endpoint
+# per environment without a full helm upgrade. Forwarded, as read at
+# startup, into every dynamically-launched producer pod's own env by
+# service/env_builder.py's common_env() — that forwarding itself is plain
+# Python, not another layer of Kubernetes indirection.
+awsEndpointUrl: ""
+awsRegion: eu-west-2
+
+# Secret holding the platform's cloud storage credentials — the "one-time
+# setup, then injected automatically" secret described in FR-D-016m-06,
+# sourced the same way kafkaOauthSecretName already is (Key Vault on
+# Azure, Secrets Manager on AWS, Secret Manager on GCP, synced into this
+# Secret by the CD pipeline — never a literal in values.yaml). Only the
+# key(s) matching DPN_CLOUD_PROVIDER above need to actually exist; the
+# others are simply unused. All are optional here so a missing Secret
+# doesn't block a deploy — it surfaces instead as a clear
+# config.validation.failed on the first product's adaptor pod (see
+# .docs/kafka-auth-modes.md's CA-trust section for the same fail-closed
+# posture applied to Kafka).
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY   - DPN_CLOUD_PROVIDER=aws
+#   SRC_CONNECTION_STRING / TARGET_CONNECTION_STRING - DPN_CLOUD_PROVIDER=azure
+#     (same secret shape as producer-file-dp-secret /
+#     blueprints/producer/file/adaptor/charts — source and target are two
+#     distinct storage accounts in the real deployment, so both keys are
+#     read separately, not one reused for both. Any MAPPER_CONNECTION_STRING
+#     key on that secret is ignored: the schema-mapper stage was absorbed
+#     into the adaptor, so nothing reads one any more.)
+#   GCP_SERVICE_ACCOUNT_KEY (base64 JSON) / GCP_PROJECT_ID - =gcp
+platformStorageSecretName: producer-file-dp-secret
+
+# Secret holding this cluster's Kafka OAuth client secret, key
+# KC_SERVICE_CLIENT_SECRET — same shape/convention as the static charts'
+# kafkaOauthSecretName (e.g. producer/file/generic/adaptor/charts/values.yaml).
+kafkaOauthSecretName: dpn-keycloak-secrets
+
+# Secret holding dpn-tls's truststore.jks/keystore.jks passwords, keys
+# TRUSTSTORE_PASSWORD/KEYSTORE_PASSWORD — a separate secret from
+# kafkaOauthSecretName above, same convention as the static blueprint charts.
+tlsAuthSecretName: tls-auth-secret
+
+# Secret holding the common Kafka/Keycloak TLS truststore (PEM CA cert),
+# mounted at /etc/kafka/secrets/ca.crt — same convention/secret as the
+# static consumer/producer charts (see e.g.
+# consumer/topic/extractor/charts/values.yaml).
+kafkaTlsSecretName: dpn-tls
+
+# ===========================================================================
+# oauth2-proxy — Keycloak OIDC gateway in front of this UI, same pattern as
+# dpn-portal in dpn-health-monitoring-service (charts/oauth2-proxy +
+# charts/dpn-portal there): the UI itself does no auth
+# (service/auth.py just reads the headers oauth2-proxy adds), and the
+# external LoadBalancer (templates/lb.yaml) points at oauth2-proxy instead
+# of straight at this UI's own Service once enabled.
+#
+# Reuses dpn-service-client / dpn-realm — the same client already used for
+# Kafka OAuth above — so there is one fewer Keycloak client to register and
+# rotate. Its client secret is the very same credential already required in
+# kafkaOauthSecretName's KC_SERVICE_CLIENT_SECRET key, read a second time
+# here rather than duplicated into a separate Secret.
+#
+# Defaults to DISABLED: .pipelines/azure-pipelines/cd-pipelines/dpn-self-
+# service-cd.yaml's `helm upgrade --install dpn-self-service` does not pass
+# oauth2Proxy.externalUrl, and that value is required the moment this is
+# enabled (see templates/_helpers.tpl) — turning this on by default would
+# hard-fail that pipeline's next deploy in every environment at once. Flip
+# to true (with externalUrl set — see below) one environment at a time, via
+# --set on that pipeline's helm upgrade, once each environment's LB address
+# is known. See service/README.md's "Keycloak authentication" section.
+# ===========================================================================
+oauth2Proxy:
+  enabled: false
+
+  image:
+    repository: quay.io/oauth2-proxy/oauth2-proxy
+    tag: "v7.6.0"
+    pullPolicy: IfNotPresent
+
+  replicaCount: 1
+  # Plain HTTP by default — this UI runs behind the same internal-only Azure
+  # LB it always has (loadBalancer below), with no ingress/TLS in this
+  # namespace. Set tls.enabled below to terminate HTTPS here instead, the
+  # way charts/oauth2-proxy/templates/configmap.yaml does it in
+  # dpn-health-monitoring-service.
+  servicePort: 4180
+
+  # Terminates HTTPS at this proxy using the same self-signed dpn-tls
+  # Secret (tls.crt/tls.key) every producer/consumer chart already mounts
+  # for its own Kafka trust — no separate cert to provision, and the same
+  # cert local Keycloak serves HTTPS with (local/minikube/keycloak.yaml),
+  # so the browser trusts one CA for the whole local stack. oauth2-proxy
+  # drops its plain-HTTP listener entirely once tls_cert_file is set.
+  tls:
+    enabled: false
+    certFile: /etc/kafka/secrets/tls.crt
+    keyFile: /etc/kafka/secrets/tls.key
+    servicePort: 4443
+
+  # Browser-facing URL of the PROXY (what users actually hit) — required,
+  # e.g. http://10.226.x.x or http://dpn-self-service.example.internal.
+  # Registered with Keycloak as this client's redirect URI
+  # (<externalUrl>/oauth2/callback) and, unchanged, as its
+  # post_logout_redirect_uri for the sign-out link service/auth.py
+  # builds. Left blank on purpose — see templates/_helpers.tpl.
+  externalUrl: ""
+
+  keycloak:
+    # Browser-facing Keycloak base URL — only login_url is built from it,
+    # since that's the one redirect a browser has to follow.
+    publicUrl: "https://dpn-keycloak-service-lb.ns-dpn-01.svc.cluster.local:8443"
+    # In-cluster URL for the server-to-server calls (token redeem, JWKS).
+    # Matches the host already used in env.DPN_KAFKA_OAUTH_TOKEN_ENDPOINT_URL
+    # above — keep the two in sync if Keycloak ever moves.
+    internalUrl: "https://dpn-keycloak-service-lb.ns-dpn-01.svc.cluster.local:8443"
+    # Empty means "same as internalUrl" — see
+    # charts/oauth2-proxy/_helpers.tpl's oauth2-proxy.issuerUrl in
+    # dpn-health-monitoring-service for why that's the correct default
+    # while Keycloak runs without KC_HOSTNAME pinned.
+    issuerUrl: ""
+    realm: dpn-realm
+    clientId: dpn-service-client
+    # Keycloak has no "groups" client scope in this realm — realm roles
+    # ride in a custom "roles" claim via a protocol mapper, so the scope
+    # list must be pinned or Keycloak rejects the login with invalid_scope.
+    scope: "openid email profile"
+    # All three may log in; service/auth.py's require_admin/require_operator
+    # then restrict what each can do once past this login gate: dpnadmin
+    # can create/delete/start/stop/pause/resume/run, dpnoperator can
+    # start/stop/pause/resume/run an existing product but not create or
+    # delete one, and dpnreader gets a read-only view.
+    allowedRoles:
+      - dpnadmin
+      - dpnoperator
+      - dpnreader
+    # Last resort — flip to true only if Keycloak's certificate has no SAN
+    # for its in-cluster name (see keycloak.internalUrl above).
+    insecureSkipVerify: false
+
+  cookie:
+    # Distinct from every other proxy sharing this realm's client, so this
+    # UI's session cookie never collides with another UI's.
+    name: _oauth2_proxy_self_service
+    expire: "4h"
+    refresh: "30m"
+    samesite: lax
+
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+
+# External access to the UI. Internal LB by default (not internet-facing).
+# Set internal: false for a public LB, or loadBalancer.enabled: false to
+# rely on kubectl port-forward / an Ingress instead.
+loadBalancer:
+  enabled: true
+  internal: true
+  loadBalancerIP: <<your specific value>>
+  # "azure" (default) renders the AKS in-tree annotation this chart has
+  # always used; "aws" renders the EKS in-tree equivalent instead (the
+  # classic/NLB in-tree provider — no AWS Load Balancer Controller add-on
+  # required). The AWS EKS pipeline sets this to "aws"; the Azure pipeline
+  # never sets it, so this renders exactly as before.
+  cloud: azure
+
+# Registry persistence (service/data/data_products.json). A PVC is the
+# pragmatic minimum for AKS — no state survives a pod restart without one.
+# This is a single-replica, single-writer stopgap; moving the registry to
+# Postgres (see service/README.md "Moving this to production") is
+# still the recommended path before running more than one replica or
+# needing HA.
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClassName: default

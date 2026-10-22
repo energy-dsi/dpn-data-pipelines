@@ -1,0 +1,29 @@
+namespace: ns-dpn-dp-01
+producerNamespace: ns-dpn-dp-01
+
+imageRegistry: <<your specific value>>
+imagePullSecretName: ghcr-pull-secret
+
+serviceAccount:
+  irsaRoleArn: "<<your specific value>>"
+
+env:
+  DPN_NAMESPACE: ns-dpn-dp-01
+  DPN_IMAGE_REGISTRY: <<your specific value>>
+  DPN_IMAGE_PULL_SECRET: ghcr-pull-secret
+  DPN_PRODUCER_SERVICE_ACCOUNT: dpn-self-service
+  DPN_CLOUD_PROVIDER: aws
+  DPN_REGISTRY_BACKUP_CONTAINER: <<your specific value>>
+
+awsRegion: eu-west-2
+awsEndpointUrl: "https://s3.eu-west-2.amazonaws.com"
+
+loadBalancer:
+  enabled: true
+  internal: true
+  cloud: aws
+
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClassName: gp3

@@ -1,0 +1,266 @@
+name: DPN Rollback - Self-Service Data Pipelines
+
+# Rolls back ONE of the Helm releases dpn-self-service-cd deploys into
+# ns-dpn-dp-01. Producer Deployments the UI creates dynamically
+# (service/k8s_ops.py) are plain kubectl objects, not Helm releases, so
+# there is nothing to roll back for those — stop/start a data product from
+# the UI instead.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select Environment"
+        required: true
+        default: "test"
+        type: choice
+        options:
+          - dev
+          - test
+
+      cluster:
+        description: "Target DPN Cluster"
+        required: true
+        default: "dpn01"
+        type: choice
+        options:
+          - dpn01
+          - dpn02
+
+      cloud:
+        description: "Target Cloud Provider"
+        required: true
+        default: "aws"
+        type: choice
+        options:
+          - aws
+          - azure
+          - gcp
+
+      release_name:
+        description: "Helm release to roll back"
+        required: true
+        default: "dpn-self-service"
+        type: choice
+        options:
+          - dpn-self-service
+          - dpn-consumer-file-extractor
+          - dpn-consumer-topic-extractor
+
+      targetRevision:
+        description: >-
+          Revision to roll back to. "0" (default) = the most recent
+          deployed/superseded revision before the current one (skips
+          failed/pending revisions). Or enter a specific revision number
+          from "helm history <release>". Must be a non-negative integer.
+        required: true
+        default: "0"
+        type: string
+
+      confirm:
+        description: >-
+          CONFIRM: retype the "release_name" value selected above, exactly
+          (e.g. "dpn-self-service").
+        required: true
+        type: string
+
+env:
+  PARAMETERS_FILE: .github/config/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.json
+  PRODUCER_NAMESPACE: ns-dpn-dp-01
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  rollback:
+    name: Helm Rollback
+    runs-on: [self-hosted, vmss]
+    # Single approval gate: configure required reviewers on the
+    # <environment>-<cluster> GitHub Environment.
+    environment: ${{ inputs.environment }}-${{ inputs.cluster }}
+    steps:
+      - name: Validate Inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ inputs.confirm }}" != "${{ inputs.release_name }}" ]]; then
+            echo "ERROR: confirmation text '${{ inputs.confirm }}' does not match release_name '${{ inputs.release_name }}'."
+            echo "Aborting — nothing was touched."
+            exit 1
+          fi
+
+          REV="${{ inputs.targetRevision }}"
+          if ! echo "$REV" | grep -Eq '^[0-9]+$'; then
+            echo "ERROR: targetRevision '$REV' is not a non-negative integer."
+            echo "Use 0 for the previous stable revision, or a revision number from 'helm history'."
+            exit 1
+          fi
+
+          echo "Inputs valid: release_name=${{ inputs.release_name }}, targetRevision=$REV"
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Read Deployment Config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "${PARAMETERS_FILE}" ]; then
+            echo "ERROR: ${PARAMETERS_FILE} not found!"
+            exit 1
+          fi
+
+          echo "Loading config from ${PARAMETERS_FILE}"
+          for key in $(jq -r 'keys_unsorted[]' "${PARAMETERS_FILE}"); do
+            value=$(jq -r ".\"$key\"" "${PARAMETERS_FILE}")
+            echo "${key}<<EOF" >> "$GITHUB_ENV"
+            echo "${value}" >> "$GITHUB_ENV"
+            echo "EOF" >> "$GITHUB_ENV"
+            echo "Set ${key}"
+          done
+
+      # Fail fast if this cloud/environment/cluster isn't onboarded yet
+      # (config still holds placeholder values).
+      - name: Validate Cloud Setup
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -q '"TODO"' "${PARAMETERS_FILE}"; then
+            echo "::error::${PARAMETERS_FILE} still contains TODO placeholder values — this cloud/environment isn't onboarded yet."
+            exit 1
+          fi
+          echo "Config for ${{ inputs.cloud }} / ${{ inputs.environment }}-${{ inputs.cluster }} has no placeholder values."
+
+      - name: Pre-Rollback Checklist
+        shell: bash
+        run: |
+          echo "CONFIRM BEFORE PROCEEDING:"
+          echo "1. Release: ${{ inputs.release_name }}  Namespace: $PRODUCER_NAMESPACE"
+          echo "2. Target revision: ${{ inputs.targetRevision }} (0 = previous stable revision)"
+          echo "3. You have checked the revision history below and the target is the one you want"
+          echo "4. Rolling back reverts chart version and values — it does NOT undo external side effects"
+          echo "   (e.g. registry changes, Kafka topic changes, data written under the newer version)"
+          echo "5. This rolls back ONLY '${{ inputs.release_name }}' — no other release is touched"
+
+      - name: Cloud Login
+        uses: ./.github/actions/cloud-login
+        with:
+          cloud: ${{ inputs.cloud }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-account-id: ${{ env.AWS_ACCOUNT_ID }}
+          eks-cluster: ${{ env.EKS_CLUSTER }}
+          gcp-project-id: ${{ env.GCP_PROJECT_ID }}
+          gcp-region: ${{ env.GCP_REGION }}
+          gke-cluster: ${{ env.GKE_CLUSTER }}
+          gcp-workload-identity-provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          gcp-service-account: ${{ env.GCP_SERVICE_ACCOUNT }}
+
+      - name: Show Last 5 Revisions
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          RELEASE="${{ inputs.release_name }}"
+
+          if ! helm status "$RELEASE" -n "$PRODUCER_NAMESPACE" >/dev/null 2>&1; then
+            echo "ERROR: Release '$RELEASE' not found in namespace '$PRODUCER_NAMESPACE'."
+            exit 1
+          fi
+
+          # Images a given revision's manifest would run — "superseded" only
+          # means a later deploy replaced it, not that it was healthy, so
+          # showing the image makes a broken revision easy to spot.
+          rev_images() {
+            helm get manifest "$RELEASE" -n "$PRODUCER_NAMESPACE" --revision "$1" 2>/dev/null \
+              | grep -E '^[[:space:]]*image:' \
+              | sed -E 's/^[[:space:]]*image:[[:space:]]*//; s/"//g' | sort -u | paste -sd, -
+          }
+
+          echo "Last 5 revisions for '$RELEASE':"
+          helm history "$RELEASE" -n "$PRODUCER_NAMESPACE" -o json \
+            | jq -r '.[-5:][] | "\(.revision)|\(.status)|\(.updated)|\(.description)"' \
+            | while IFS='|' read -r rev status updated desc; do
+                echo "Revision: $rev | Status: $status | Updated: $updated | Image: $(rev_images "$rev") | $desc"
+              done
+
+      - name: Helm Rollback
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          RELEASE="${{ inputs.release_name }}"
+          TARGET_REVISION="${{ inputs.targetRevision }}"
+
+          HISTORY_JSON=$(helm history "$RELEASE" -n "$PRODUCER_NAMESPACE" -o json)
+
+          if [[ "$TARGET_REVISION" == "0" ]]; then
+            # Previous stable = the latest deployed/superseded revision that
+            # is OLDER than the current deployed one. Anchoring on the
+            # current deployed revision (not just the tail of the list)
+            # keeps this correct when the newest revision failed.
+            REV=$(echo "$HISTORY_JSON" | jq -r '
+              (map(select(.status=="deployed")) | last | .revision) as $cur
+              | map(select((.status=="deployed" or .status=="superseded") and .revision < $cur))
+              | last | .revision // empty
+            ')
+            if [[ -z "$REV" ]]; then
+              echo "ERROR: No earlier deployed/superseded revision found for '$RELEASE'."
+              exit 1
+            fi
+            echo "Resolved previous stable revision: $REV"
+          else
+            REV="$TARGET_REVISION"
+          fi
+
+          STATUS=$(echo "$HISTORY_JSON" | jq -r --argjson rev "$REV" '.[] | select(.revision == $rev) | .status')
+          if [[ -z "$STATUS" ]]; then
+            echo "ERROR: Revision $REV does not exist for '$RELEASE'."
+            exit 1
+          fi
+          echo "Revision $REV status: $STATUS"
+
+          if [[ "$STATUS" != "deployed" && "$STATUS" != "superseded" ]]; then
+            echo "Rollback blocked: revision $REV has status '$STATUS' (only deployed/superseded are allowed)."
+            exit 1
+          fi
+
+          rev_images() {
+            helm get manifest "$RELEASE" -n "$PRODUCER_NAMESPACE" --revision "$1" 2>/dev/null \
+              | grep -E '^[[:space:]]*image:' \
+              | sed -E 's/^[[:space:]]*image:[[:space:]]*//; s/"//g' | sort -u | paste -sd, -
+          }
+
+          CURRENT_REV=$(echo "$HISTORY_JSON" | jq -r 'map(select(.status=="deployed")) | last | .revision // empty')
+          echo "Current revision ${CURRENT_REV:-?} image(s): $(rev_images "${CURRENT_REV:-0}")"
+          echo "Target  revision $REV image(s): $(rev_images "$REV")"
+          if [[ "$STATUS" == "superseded" ]]; then
+            echo "::warning::Revision $REV is 'superseded' — a later deploy replaced it, which does not mean it was healthy. Check that the target image above is the one you want."
+          fi
+
+          echo "Dry run"
+          helm rollback "$RELEASE" "$REV" -n "$PRODUCER_NAMESPACE" --dry-run || exit 1
+
+          echo "Executing rollback"
+          helm rollback "$RELEASE" "$REV" -n "$PRODUCER_NAMESPACE" --wait --timeout 10m
+
+      - name: Verification
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          RELEASE="${{ inputs.release_name }}"
+
+          echo "Helm status:"
+          helm status "$RELEASE" -n "$PRODUCER_NAMESPACE"
+
+          echo "Recent revisions:"
+          helm history "$RELEASE" -n "$PRODUCER_NAMESPACE" | tail -n 3
+
+          echo "Pods:"
+          kubectl get pods -n "$PRODUCER_NAMESPACE"

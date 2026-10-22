@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% from "_icons.html" import consumers as consumers_icon, chevron, chevron_down, arrow_right, error as error_icon, checkmark %}
+
+{% block title %}New Data Product{% endblock %}
+
+{% block content %}
+  <div class="dpn-page-header">
+    <span class="dpn-page-header__icon">{{ consumers_icon() }}</span>
+    <div>
+      <h1>DPN Data Product Pipelines</h1>
+      <p>Create, manage and monitor your data product pipelines</p>
+    </div>
+  </div>
+
+  <nav class="dpn-tabs">
+    <a class="dpn-tab is-active" href="/producer-pipelines" title="Producer Pipelines">Producer Pipelines</a>
+    <a class="dpn-tab" href="/consumer-pipelines" title="Consumer Pipelines">Consumer Pipelines</a>
+    <a class="dpn-tab" href="/run-history?role=producer&amp;limit=50" title="Run History">Run History</a>
+  </nav>
+
+  <nav class="dpn-breadcrumbs">
+    <a class="dpn-breadcrumbs__back" href="/producer-pipelines" title="Back">{{ chevron() }}</a>
+    <a class="dpn-breadcrumbs__item" href="/producer-pipelines" title="Producer Pipelines">Producer Pipelines</a>
+    <span class="dpn-breadcrumbs__sep">/</span>
+    <span class="dpn-breadcrumbs__item is-current">Add New Data Product</span>
+  </nav>
+
+  <h2 class="dpn-subpage-title">New Data Product</h2>
+
+  <div class="dpn-stepper-row">
+    <div class="dpn-stepper">
+      <span class="dpn-stepper__circle is-active" data-step="1">1</span>
+      <span class="dpn-stepper__label is-active" data-step="1">Name &amp; Details</span>
+    </div>
+    <div class="dpn-stepper-row__line"></div>
+    <div class="dpn-stepper">
+      <span class="dpn-stepper__circle" data-step="2">2</span>
+      <span class="dpn-stepper__label" data-step="2">Review Names</span>
+    </div>
+  </div>
+
+  <div class="dpn-step-layout">
+    <div class="dpn-step-column">
+      <h3>Step 1: Name &amp; Details</h3>
+
+      {% if error and field_error != "product_type" %}
+      <div class="dpn-alert--error">{{ error }}</div>
+      {% endif %}
+
+      <div class="dpn-info-box">
+        <div class="dpn-info-box__row">
+          <span><strong>Organisation:</strong> {{ org_name }}</span>
+          <span class="dpn-info-box__dot"></span>
+          <span><strong>Cloud provider:</strong> {{ cloud_provider }}</span>
+        </div>
+        <p class="dpn-info-box__hint">
+          Pre-configured values based on your organisation and cloud service provider.
+        </p>
+      </div>
+
+      <form class="dpn-validate" method="post" action="/data-products/preview" novalidate>
+        <div class="dpn-form-fields">
+          <div class="dpn-field {% if field_error == 'product_type' %}has-error{% endif %}" data-field="product_type">
+            <label class="dpn-field__label" for="product_type">Data Product Name</label>
+            <div class="dpn-field__control">
+              <input class="dpn-input" id="product_type" name="product_type" placeholder="e.g. bp-natural-gas-02" value="{{ step1.product_type if step1 else '' }}" required>
+              <span class="dpn-field__success-icon">{{ checkmark() }}</span>
+              <span class="dpn-field__verifying-icon"></span>
+              <span class="dpn-field__error-icon">{{ error_icon() }}</span>
+            </div>
+            <p class="dpn-field__verifying-text">Verifying</p>
+            <p class="dpn-field__error-text">{% if field_error == "product_type" %}{{ error }}{% endif %}</p>
+          </div>
+
+          <div class="dpn-field" data-field="pipeline_type" data-required-message="Select an integration pathway.">
+            <span class="dpn-field__label">Integration Pathway</span>
+            <div class="dpn-radio-row">
+              {% for p in pipeline_types %}
+              <label class="dpn-radio-option">
+                <input type="radio" name="pipeline_type" value="{{ p }}" {% if p == (step1.pipeline_type if step1 else "file") %}checked{% endif %} required>
+                {{ p | capitalize }}
+              </label>
+              {% endfor %}
+            </div>
+            <p class="dpn-field__error-text"></p>
+          </div>
+
+          <div class="dpn-field" data-field="execution_mode">
+            <label class="dpn-field__label" for="execution_mode">Execution</label>
+            <div class="dpn-dropdown-wrap dpn-field__control">
+              <select class="dpn-dropdown" id="execution_mode" name="execution_mode" required>
+                {% for m in execution_modes %}
+                <option value="{{ m }}" {% if m == (step1.execution_mode if step1 else "automatic") %}selected{% endif %}>{{ m | capitalize }}</option>
+                {% endfor %}
+              </select>
+              <span class="dpn-field__error-icon">{{ error_icon() }}</span>
+              {{ chevron_down() }}
+            </div>
+            <p class="dpn-field__hint">
+              <strong>Choose how the run is triggered.</strong><br>
+              <strong>Automatic</strong> runs at the interval you specify in Schedule (seconds).<br>
+              <strong>Manual</strong> only runs when a user selects<br>
+              <strong>Run now</strong> from the producer pipeline list.
+            </p>
+            <p class="dpn-field__error-text"></p>
+          </div>
+
+          <div class="dpn-field" data-field="schedule_seconds">
+            <label class="dpn-field__label" for="schedule_seconds">Schedule (seconds)</label>
+            <div class="dpn-field__control">
+              <input class="dpn-input" id="schedule_seconds" name="schedule_seconds" type="number" min="5" max="3600" value="{{ step1.schedule_seconds if step1 else 60 }}" required>
+              <span class="dpn-field__error-icon">{{ error_icon() }}</span>
+            </div>
+            <p class="dpn-field__error-text"></p>
+          </div>
+
+          <div class="dpn-step-actions">
+            <a class="dpn-btn dpn-btn--outline-danger" href="/producer-pipelines" title="Cancel and return to Producer Pipelines">Cancel</a>
+            <button class="dpn-btn dpn-btn--outline" type="submit" {% if field_error == "product_type" %}hidden{% endif %}>
+              Next: Review Names
+              {{ arrow_right() }}
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+
+    <div class="dpn-step-placeholder" id="review-panel">
+      <p>Complete Step 1 to proceed.</p>
+    </div>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="/static/js/review-live-check.js"></script>
+  <script src="/static/js/inline-review.js"></script>
+{% endblock %}

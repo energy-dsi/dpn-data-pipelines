@@ -1,0 +1,25 @@
+{% from "_icons.html" import checkmark_outline, close %}
+{#
+  Success flash toast — shown once, top-right, after a redirect that sets
+  `toast_message` in the template context (see ui/app.py's index(), which
+  reads the ?created=<product_type> query param
+  confirm_data_product()'s RedirectResponse appends on success). Animates
+  in on load, auto-dismisses after a few seconds, and can be dismissed
+  early via the close button — see ui/static/js/toast.js and layout.css's
+  "Success toast" section.
+
+  Only rendered (not just hidden) when there's a message, so pages that
+  never set toast_message pay nothing for it.
+#}
+{% if toast_message %}
+<div class="dpn-toast dpn-toast--success" id="dpn-toast" role="status" aria-live="polite">
+  <span class="dpn-toast__icon">{{ checkmark_outline() }}</span>
+  <div class="dpn-toast__body">
+    <p class="dpn-toast__title">{{ toast_title or "Publishing Successful!" }}</p>
+    <p class="dpn-toast__message">{{ toast_message }}</p>
+  </div>
+  <button type="button" class="dpn-toast__close" id="dpn-toast-close" aria-label="Dismiss">
+    {{ close() }}
+  </button>
+</div>
+{% endif %}
