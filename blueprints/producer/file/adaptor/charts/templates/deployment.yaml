@@ -15,6 +15,13 @@ spec:
       labels:
         app: {{ .Values.name }}
     spec:
+      {{- if and (eq .Values.cloudProviderType "aws") .Values.serviceAccount.create }}
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      {{- end }}
+      {{- if .Values.imagePullSecret }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret }}
+      {{- end }}
       restartPolicy: Always
       containers:
         - name: {{ .Values.name }}
@@ -95,11 +102,18 @@ spec:
               value: {{ .Values.PRODUCT_NAME | quote }}
             - name: "orgName"
               value: {{ .Values.orgName | quote }}
+            {{- if ne .Values.cloudProviderType "aws" }}
             - name: "AWS_ENDPOINT_URL"
               valueFrom:
                 configMapKeyRef:
                   name: {{ .Values.name }}-aws-config
                   key: AWS_ENDPOINT_URL
+            {{- end }}
+            - name: "AWS_ENDPOINT_URL_S3"
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Values.name }}-aws-config
+                  key: AWS_ENDPOINT_URL_S3
             - name: "AWS_REGION"
               valueFrom:
                 configMapKeyRef:
