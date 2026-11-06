@@ -3,7 +3,7 @@ name: dpn-consumer-file-extractor
 cloudProviderType: azure
 imageRegistry: ""
 imageName: dpn-consumer-file-extractor
-imageTag: "1.0.1"
+imageTag: ""
 bootstrapServer: dpn-kafka-target.ns-dpn-01.svc.cluster.local:9092
 # ============================================================
 # Kafka Security (SASL/TLS — SASL_SSL + SASL_OAUTHBEARER/Keycloak)
@@ -31,10 +31,10 @@ tlsAuthSecretName: tls-auth-secret
 # the old schema_mapper entirely (see main.py's v2.0.0 changelog): files
 # move srcContainerName -> targetContainerName directly, one Kafka event
 # per file published straight to targetTopicName.
-srcContainerName: ""
+srcContainerName: "dp-consumer-stage"
 storageConnectionSecret: consumer-file-dp-secret
 targetTopicName: dp-consumer-file-target
-targetContainerName: ""
+targetContainerName: "dp-consumer-target"
 scheduleInterval: 60 # schedule interval in seconds
 
 # ------- AWS Config ------------
@@ -46,6 +46,8 @@ scheduleInterval: 60 # schedule interval in seconds
 # ConfigMap at install time; override them per environment the same way
 # as any other value here.
 awsEndpointUrl: ""
+#awsEndpointUrl: "<<your specific value>>"
+
 awsRegion: eu-west-2
 awsAccessSecret: aws-access-secret
 

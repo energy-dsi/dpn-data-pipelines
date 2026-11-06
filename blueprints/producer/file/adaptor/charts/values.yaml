@@ -35,9 +35,9 @@ productType: example-product
 PRODUCT_NAME: example-product
 orgName: example-org
 
-srcContainerName: ""
+srcContainerName: example-product-stage
 storageConnectionSecret: producer-file-dp-secret
-targetContainerName: ""
+targetContainerName: example-product-target
 targetTopicName: dpn-producer-example-product-target
 scheduleInterval: 60
 

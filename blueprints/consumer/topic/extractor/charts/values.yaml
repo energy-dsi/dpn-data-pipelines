@@ -36,9 +36,9 @@ srcGroupId: consumer-topic-extractor # Consumer group ID
 # ============================================================
 namespace: ns-dpn-01 # Kubernetes namespace
 name: dpn-consumer-topic-extractor # Service/deployment name
-imageRegistry: ghcr.io/energy-dsi/1.0.1
+imageRegistry: ""
 imageName: dpn-consumer-topic-extractor
-imageTag: "1.0.1"
+imageTag: ""
 
 # ============================================================
 # Pipeline Configuration
