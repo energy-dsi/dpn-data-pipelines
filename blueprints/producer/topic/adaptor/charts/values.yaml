@@ -79,6 +79,6 @@ hpa:
 imagePullSecret: ""
 
 serviceAccount:
-  create: false
+  create: ""
   name: "dpn-producer-topic-adaptor"
   irsaRoleArn: ""

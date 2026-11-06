@@ -117,6 +117,6 @@ ENVIRONMENT: development
 imagePullSecret: ""
 
 serviceAccount:
-  create: true
+  create: ""
   name: "dpn-consumer-topic-extractor"
-  irsaRoleArn: "<<your specific value>>"
+  irsaRoleArn: ""

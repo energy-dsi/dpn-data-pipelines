@@ -94,6 +94,6 @@ ENVIRONMENT: development
 imagePullSecret: ""
 
 serviceAccount:
-  create: true
+  create: ""
   name: "dpn-consumer-file-extractor"
-  irsaRoleArn: "<<your specific value>>"
+  irsaRoleArn: ""
