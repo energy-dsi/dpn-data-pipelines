@@ -8,7 +8,7 @@
 namespace: ns-dpn-dp-01
 cloudProviderType: aws
 imagePullSecret: ghcr-pull-secret
-imageRegistry: ghcr.io/energy-dsi
+imageRegistry: ghcr.io/energy-dsi/1.0.1
 
 serviceAccount:
   create: true

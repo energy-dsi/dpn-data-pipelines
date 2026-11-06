@@ -45,7 +45,7 @@ scheduleInterval: 60 # schedule interval in seconds
 # upgrade. awsEndpointUrl/awsRegion below are what populates that
 # ConfigMap at install time; override them per environment the same way
 # as any other value here.
-awsEndpointUrl: "<<your specific value>>"
+awsEndpointUrl: ""
 awsRegion: eu-west-2
 awsAccessSecret: aws-access-secret
 
