@@ -76,7 +76,7 @@ hpa:
         value: 50
         periodSeconds: 60
 
-imagePullSecret: ghcr-pull-secret
+imagePullSecret: ""
 
 serviceAccount:
   create: false

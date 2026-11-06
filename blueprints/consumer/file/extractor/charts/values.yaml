@@ -1,7 +1,7 @@
 namespace: ns-dpn-01
 name: dpn-consumer-file-extractor
 cloudProviderType: azure
-imageRegistry: ghcr.io/energy-dsi/1.0.1
+imageRegistry: ""
 imageName: dpn-consumer-file-extractor
 imageTag: "1.0.1"
 bootstrapServer: dpn-kafka-target.ns-dpn-01.svc.cluster.local:9092
@@ -31,10 +31,10 @@ tlsAuthSecretName: tls-auth-secret
 # the old schema_mapper entirely (see main.py's v2.0.0 changelog): files
 # move srcContainerName -> targetContainerName directly, one Kafka event
 # per file published straight to targetTopicName.
-srcContainerName: dp-consumer-stage
+srcContainerName: ""
 storageConnectionSecret: consumer-file-dp-secret
 targetTopicName: dp-consumer-file-target
-targetContainerName: dp-consumer-target
+targetContainerName: ""
 scheduleInterval: 60 # schedule interval in seconds
 
 # ------- AWS Config ------------
@@ -89,12 +89,9 @@ HEARTBEAT_INTERVAL_SECONDS: 60
 
 ENVIRONMENT: development
 
-imagePullSecret: ghcr-pull-secret
+imagePullSecret: ""
 
 serviceAccount:
   create: true
   name: "dpn-consumer-file-extractor"
   irsaRoleArn: "<<your specific value>>"
-
-srcContainerName: <<your specific value>>
-targetContainerName: <<your specific value>>

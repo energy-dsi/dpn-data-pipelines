@@ -114,7 +114,7 @@ producerFlushTimeoutSecs: 10
 
 ENVIRONMENT: development
 
-imagePullSecret: ghcr-pull-secret
+imagePullSecret: ""
 
 serviceAccount:
   create: true
