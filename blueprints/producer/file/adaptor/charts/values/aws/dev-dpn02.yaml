@@ -1,0 +1,22 @@
+# =============================================================================
+# Producer file adaptor — AWS dev-dpn02 values
+# EKS     : <<your specific value>>
+# Account : 839070695267
+# Region  : eu-west-2
+# =============================================================================
+
+namespace: ns-dpn-dp-01
+cloudProviderType: aws
+imagePullSecret: ghcr-pull-secret
+imageRegistry: ghcr.io/energy-dsi/1.0.1
+
+serviceAccount:
+  create: true
+  name: "dpn-producer-file-adaptor"
+  irsaRoleArn: "<<your specific value>>"
+
+awsRegion: eu-west-2
+awsEndpointUrl: ""
+
+srcContainerName: <<your specific value>>
+targetContainerName: <<your specific value>>

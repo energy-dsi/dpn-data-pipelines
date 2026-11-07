@@ -1,0 +1,22 @@
+# =============================================================================
+# Consumer file extractor — AWS dev-dpn01 values
+# EKS     : <<your specific value>>
+# Account : 627657103820
+# Region  : eu-west-2
+# =============================================================================
+
+namespace: ns-dpn-dp-01
+cloudProviderType: aws
+imagePullSecret: ghcr-pull-secret
+imageRegistry: ghcr.io/energy-dsi/1.0.1
+
+serviceAccount:
+  create: true
+  name: "dpn-consumer-file-extractor"
+  irsaRoleArn: "<<your specific value>>"
+
+awsRegion: eu-west-2
+awsEndpointUrl: ""
+
+srcContainerName: <<your specific value>>
+targetContainerName: <<your specific value>>

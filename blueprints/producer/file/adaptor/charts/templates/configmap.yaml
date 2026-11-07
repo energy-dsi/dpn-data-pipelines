@@ -12,4 +12,5 @@ metadata:
     app: {{ .Values.name }}
 data:
   AWS_REGION: {{ .Values.awsRegion | quote }}
-  AWS_ENDPOINT_URL: {{ .Values.awsEndpointUrl | quote }}
+  AWS_ENDPOINT_URL: {{ .Values.awsEndpointUrl | default (printf "https://s3.%s.amazonaws.com" .Values.awsRegion) | quote }}
+  AWS_ENDPOINT_URL_S3: {{ .Values.awsEndpointUrl | default (printf "https://s3.%s.amazonaws.com" .Values.awsRegion) | quote }}

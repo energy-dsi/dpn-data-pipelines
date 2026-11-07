@@ -2,7 +2,7 @@ namespace: ns-dpn-01
 name: dpn-consumer-file-extractor
 cloudProviderType: azure
 imageRegistry: ""
-imageName: consumer-file-extractor
+imageName: dpn-consumer-file-extractor
 imageTag: ""
 bootstrapServer: dpn-kafka-target.ns-dpn-01.svc.cluster.local:9092
 # ============================================================
@@ -31,10 +31,10 @@ tlsAuthSecretName: tls-auth-secret
 # the old schema_mapper entirely (see main.py's v2.0.0 changelog): files
 # move srcContainerName -> targetContainerName directly, one Kafka event
 # per file published straight to targetTopicName.
-srcContainerName: dp-consumer-stage
+srcContainerName: "dp-consumer-stage"
 storageConnectionSecret: consumer-file-dp-secret
 targetTopicName: dp-consumer-file-target
-targetContainerName: dp-consumer-target
+targetContainerName: "dp-consumer-target"
 scheduleInterval: 60 # schedule interval in seconds
 
 # ------- AWS Config ------------
@@ -45,7 +45,9 @@ scheduleInterval: 60 # schedule interval in seconds
 # upgrade. awsEndpointUrl/awsRegion below are what populates that
 # ConfigMap at install time; override them per environment the same way
 # as any other value here.
-awsEndpointUrl: "<<your specific value>>"
+awsEndpointUrl: ""
+#awsEndpointUrl: "<<your specific value>>"
+
 awsRegion: eu-west-2
 awsAccessSecret: aws-access-secret
 
@@ -88,3 +90,10 @@ OTEL_OAUTH_DISABLED: false  # set true to skip OAuth in dev/test
 HEARTBEAT_INTERVAL_SECONDS: 60
 
 ENVIRONMENT: development
+
+imagePullSecret: ""
+
+serviceAccount:
+  create: ""
+  name: "dpn-consumer-file-extractor"
+  irsaRoleArn: ""
