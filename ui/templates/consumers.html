@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% from "_icons.html" import consumers as consumers_icon %}
+
+{% block title %}DPN Data Product Pipelines{% endblock %}
+
+{% block content %}
+  <div class="dpn-page-header">
+    <span class="dpn-page-header__icon">{{ consumers_icon() }}</span>
+    <div>
+      <h1>DPN Data Product Pipelines</h1>
+      <p>
+        Create, manage and monitor your data product pipelines
+      </p>
+    </div>
+  </div>
+
+  <nav class="dpn-tabs">
+    <a class="dpn-tab {% if active == 'producer' %}is-active{% endif %}" href="/producer-pipelines" title="Producer Pipelines">Producer Pipelines</a>
+    <a class="dpn-tab {% if active == 'consumer' %}is-active{% endif %}" href="/consumer-pipelines" title="Consumer Pipelines">Consumer Pipelines</a>
+    <a class="dpn-tab {% if active == 'history' %}is-active{% endif %}" href="/run-history?role=producer&amp;limit=50" title="Run History">Run History</a>
+  </nav>
+
+  <h2 style="margin: 0 0 6px; font-size: 22px; font-weight: 500;">Consumer Pipelines</h2>
+  <p style="margin: 0 0 20px; color: var(--dpn-text-secondary); font-size: 15px;">
+    Run, update and monitor your consumer data pipelines. <playbook link>
+    <a href="https://github.com/energy-dsi/dpn-integration-playbook" target="_blank" rel="noopener" style="text-decoration: underline;">See more</a>
+  </p>
+
+  <div class="dpn-table-wrap">
+  <table class="dpn-table" data-paginate="20">
+    <thead>
+      <tr>
+        <th>Pipeline</th>
+        <th>Pathway</th>
+        <th>Extractor</th>
+        <th>Execution</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      {# fully_gone: the extractor Deployment is missing — only then is
+         there truly nothing left, so only then does Delete disable and the
+         row dim. #}
+      {% set fully_gone = row.extractor_status == "absent" %}
+      <tr class="{% if fully_gone %}gone{% endif %}">
+        <td>{{ row.label }}</td>
+        <td>{{ row.pathway }}</td>
+        <td><span class="dpn-badge {{ row.extractor_status }}">{{ row.extractor_status }}</span></td>
+        <td><span class="dpn-badge {{ row.execution_mode }}">{{ row.execution_mode }}</span></td>
+        <td class="dpn-actions">
+          <a class="dpn-btn dpn-btn--action" href="/consumer-pipelines/{{ row.key }}/logs" title="View logs for {{ row.label }}">View Logs</a>
+          <a class="dpn-btn dpn-btn--action" href="/run-history?product_type={{ row.key }}" title="View run history for {{ row.label }}">View History</a>
+          {% if is_operator %}
+          <form method="post" action="/consumer-pipelines/{{ row.key }}/run">
+            <button
+              class="dpn-btn dpn-btn--action"
+              type="submit"
+              {% if row.execution_mode != "manual" or fully_gone %}disabled{% endif %}
+              title="{% if fully_gone %}Not running.{% elif row.execution_mode == 'manual' %}Runs one cycle right now. See Run History for the result.{% else %}Set Execution to manual below to enable this.{% endif %}"
+            >Run Now</button>
+          </form>
+          <form method="post"
+                onsubmit="this.action = '/consumer-pipelines/{{ row.key }}/' + (this.mode.value === 'manual' ? 'pause' : 'resume');">
+            <select class="dpn-select" name="mode" title="automatic runs on its own; manual only runs via Run Now.">
+              <option value="automatic" {% if row.execution_mode == "automatic" %}selected{% endif %}>automatic</option>
+              <option value="manual" {% if row.execution_mode == "manual" %}selected{% endif %}>manual</option>
+            </select>
+            <button class="dpn-btn dpn-btn--action" type="submit">Apply</button>
+          </form>
+          {% endif %}
+          <!-- {% if is_admin %}
+          <form method="post" action="/consumer-pipelines/{{ row.key }}/delete"
+                class="dpn-confirm-form"
+                data-confirm-title="Are you sure you want to delete {{ row.label }} permanently?">
+            <button class="dpn-btn dpn-btn--danger" type="submit" {% if fully_gone %}disabled{% endif %}
+              title="{% if fully_gone %}Already gone.{% else %}Permanently deletes this pipeline — cannot be undone from this UI.{% endif %}"
+            >Delete</button>
+          </form>
+          {% endif %} -->
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+{% endblock %}

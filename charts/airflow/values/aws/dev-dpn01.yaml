@@ -1,0 +1,197 @@
+# =============================================================================
+# Airflow — AWS dev-dpn01 values
+# EKS     : <<your specific value>>
+# Account : <<your specific value>>
+# Region  : eu-west-2
+#
+# Content mirrors ../test-dpn01.yaml (deterministic substitution of
+# account/cluster/prefix identifiers only — see dpn-cd-airflow.yml, which
+# derives IRSA role + Secrets Manager prefix from
+# dpn/${environment}-${cluster}/airflow for every environment/cluster combo).
+#
+# STATUS: deployed. The "DPN CD - Airflow" workflow
+# (cloud=aws, environment=dev, cluster=dpn01) provisions the IRSA role
+# (dpn-airflow-secrets-role) and the 4 Secrets Manager entries under
+# secretsManager.secretPrefix below inline, before the Helm deploy step, with
+# real generated values (not placeholders) — no separate prerequisites run
+# needed. Still open:
+#   1. LoadBalancer IP is left dynamic (no loadBalancerIP pinned) — confirm
+#      whether the NESO/consumer team needs a static internal IP the way the
+#      Azure webserver LB has one, and if so how that's requested on an AWS NLB.
+# =============================================================================
+
+cloudProvider: aws
+
+namespace: ns-dpn-01
+
+imagePullSecret: ghcr-pull-secret
+
+airflow:
+  name: dpn-airflow
+
+  image:
+    repository: <<your specific value>>/dpn-airflow
+    tag: "1.0.1"
+    pullPolicy: Always
+
+  dags:
+    path: /opt/airflow/dags
+
+  webserver:
+    replicaCount: 1
+
+    service:
+      name: dpn-airflow-webserver
+      type: LoadBalancer
+
+      port: 80
+      targetPort: 8080
+
+  scheduler:
+    replicaCount: 1
+  worker:
+    replicaCount: 1
+  triggerer:
+    replicaCount: 1
+
+# ===========================================
+# Redis
+# ===========================================
+redis:
+  name: dpn-airflow-redis
+  replicaCount: 1
+
+  image:
+    repository: <<your specific value>>/redis
+    tag: "7.2"
+    pullPolicy: Always
+
+  service:
+    port: 6379
+    type: ClusterIP
+
+  args:
+    - "--save"
+    - "60 1"
+    - "--appendonly"
+    - "no"
+    - "--loglevel"
+    - "warning"
+
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+postgres:
+  name: dpn-airflow-postgres
+  replicaCount: 1
+
+  image:
+    repository: <<your specific value>>/postgres
+    tag: "16-alpine"
+    pullPolicy: Always
+
+  service:
+    port: 5432
+    type: ClusterIP
+
+  username: airflow
+  db: airflow
+
+  persistence:
+    enabled: true
+    claimName: dpn-airflow-postgres-pvc
+    storageClassName: gp3
+    size: 10Gi
+
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "1Gi"
+    limits:
+      cpu: "500m"
+      memory: "2Gi"
+
+# ===========================================
+# Monitoring
+# ===========================================
+monitoring:
+  prometheus:
+    image:
+      repository: <<your specific value>>/prometheus
+      tag: "v2.52.0"
+
+  grafana:
+    image:
+      repository: <<your specific value>>/grafana
+      tag: "10.4.2"
+
+  statsdExporter:
+    image:
+      repository: <<your specific value>>/statsd-exporter
+      tag: "v0.26.1"
+
+config:
+  executor: CeleryExecutor
+  loadExamples: false
+  dagsPausedAtCreation: true
+
+  dagsFolder: /opt/airflow/dags
+  workerConcurrency: 4
+
+  brokerUrl: redis://dpn-airflow-redis:6379/0
+
+# --------------------------------------------------
+# AWS Secrets Manager — the "DPN CD - Airflow" workflow creates these 4
+# automatically on first run with real generated values (see workflow's
+# "Create Secrets Manager Entries for airflow" step) — no manual setup needed:
+#   dpn/dev-dpn01/airflow/FERNET_KEY
+#   dpn/dev-dpn01/airflow/WEB_SECRET_KEY
+#   dpn/dev-dpn01/airflow/AIR_POSTGRES_PASSWORD
+#   dpn/dev-dpn01/airflow/AIRFLOW_ADMIN_PASSWORD
+# --------------------------------------------------
+secretsManager:
+  enabled: true
+  secretPrefix: "dpn/dev-dpn01/airflow"
+
+serviceAccount:
+  create: true
+  name: "dpn-airflow"
+  irsaRoleArn: "<<your specific value>>"
+
+# ===========================================
+# Kafka client security (control/status topics used by the
+# kafka-trigger DAGs). Must match the SASL_SSL + OAUTHBEARER
+# setup on dpn-kafka-src, or trigger/status messages are silently
+# dropped at the TCP/handshake layer instead of raising in Airflow.
+# Plain Kubernetes Secret volume (not CSI-backed) — same on both clouds.
+# ===========================================
+kafka:
+  securityProtocol: SASL_SSL
+  saslMechanism: OAUTHBEARER
+  oauthClientId: dpn-service-client
+  oauthTokenEndpointUrl: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token
+  # Must be a PEM CA bundle -- librdkafka's ssl.ca.location cannot parse a
+  # Java PKCS12 keystore. /etc/secrets/truststore.jks (the wrong, binary
+  # file) silently fails every SASL_SSL handshake in the background,
+  # confirmed live 2026-09-22: trigger publishes report "success" (flush()
+  # timeout never checked) while nothing ever reaches the broker. Same
+  # dpn-tls secret also mounts this PEM copy at /etc/kafka/secrets/ca.crt --
+  # matches azure/dev-dpn01.yaml, azure/test-dpn01.yaml, aws/test-dpn02.yaml.
+  sslCaLocation: /etc/kafka/secrets/ca.crt
+  tlsSecretName: dpn-tls
+  oauthSecretName: kafka-secrets
+
+# ===========================================
+# Airflow webserver SSO (AUTH_TYPE=AUTH_OAUTH against Keycloak). Shares the
+# same dpn-service-client + client secret as the kafka block above.
+# ===========================================
+oidc:
+  clientId: dpn-service-client
+  clientSecretName: kafka-secrets
+  clientSecretKey: KAFKA_OAUTH_CLIENT_SECRET
+  keycloakInternalUrl: https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm

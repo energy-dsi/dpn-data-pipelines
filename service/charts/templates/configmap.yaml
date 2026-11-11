@@ -1,0 +1,15 @@
+# Env-specific storage settings that legitimately vary per environment
+# (region, S3-compatible endpoint) — kept in a ConfigMap rather than as
+# literal Deployment env values so an operator can `kubectl edit configmap
+# {{ .Values.name }}-aws-config` (or patch it via CI) and restart the pod
+# to pick up a new region/endpoint, without a full `helm upgrade`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.name }}-aws-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ .Values.name }}
+data:
+  DPN_AWS_REGION: {{ .Values.awsRegion | quote }}
+  DPN_AWS_ENDPOINT_URL: {{ .Values.awsEndpointUrl | quote }}

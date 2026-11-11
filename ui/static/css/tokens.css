@@ -1,0 +1,67 @@
+/*
+Design tokens for the DPN self-service UI, sourced from the DSI "Open" Figma
+file (Admin View — Users & Roles, node 5995:114486) and named to match the
+--dpn-* convention already used by the sibling dpn-health-monitoring-service
+portal, so the two DSI UIs read as one visual family.
+
+No CDN: these are plain CSS custom properties, no Carbon/Google Fonts network
+fetch. The font stack below falls back to the closest installed system fonts
+when Poppins isn't present locally.
+*/
+:root {
+  /* Brand */
+  --dpn-brand-dark: #070e40;      /* Figma Secondary */
+  --dpn-brand-mid: #3f87aa;       /* Figma Secondary Muted */
+  --dpn-brand-vibrant: #2cb9ff;   /* Figma Secondary Vibrant */
+  --dpn-brand-subtle: #f2ebf0;    /* Figma Primary Muted Light */
+  --dpn-brand-primary: #3f0731;   /* Figma Primary */
+
+  /* Surfaces */
+  --dpn-bg: #ffffff;
+  --dpn-surface-01: #ffffff;
+  --dpn-surface-02: #f1f1f1;      /* Figma Grey 4 */
+  --dpn-surface-hover: #e6eff5;
+  --dpn-border: #d2d2d2;          /* Figma Grey 3 */
+  --dpn-border-strong: #6f6f6f;   /* Figma Grey 2 */
+
+  /* Text */
+  --dpn-text-primary: #000000;
+  --dpn-text-secondary: #4d4d4d;  /* Figma Grey 1 */
+  --dpn-text-muted: #6f6f6f;      /* Figma Grey 2 */
+  --dpn-text-on-brand: #ffffff;
+
+  /* Status / semantic */
+  --dpn-status-good: #24a148;
+  --dpn-status-good-vibrant: #70e85e; /* Figma Tertiary Vibrant — the review
+                                          step's live-check success tickmark
+                                          specifically, not the general
+                                          --dpn-status-good used elsewhere
+                                          (e.g. the "running" status badge) */
+  --dpn-status-good-surface: #eaf6e6; /* pale success-toast background — see
+                                          layout.css's "Success toast"
+                                          section */
+  --dpn-status-warning: #e94d00;
+  --dpn-status-danger: #b0322b;   /* Figma Tertiary */
+  --dpn-status-neutral: #6f6f6f;
+  --dpn-action: #2469be;          /* Figma row-action button blue */
+
+  /* Layout */
+  --dpn-header-height: 72px;
+  --dpn-sidenav-width: 272px;
+  --dpn-sidenav-collapsed-width: 64px;
+
+  /* Motion — Carbon's "productive" easing/duration scale */
+  --dpn-ease-standard: cubic-bezier(0.2, 0, 0.38, 0.9);
+  --dpn-duration-fast: 110ms;
+  --dpn-duration-moderate: 240ms;
+
+  /* Type */
+  --dpn-font-family: "Poppins", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --dpn-radius: 8px;
+  --dpn-radius-sm: 4px;
+  --dpn-radius-pill: 999px;
+
+  /* Elevation */
+  --dpn-shadow-01: 0 1px 3px rgba(7, 14, 64, 0.08);
+  --dpn-shadow-02: 4px 0 16px rgba(7, 14, 64, 0.08);
+}

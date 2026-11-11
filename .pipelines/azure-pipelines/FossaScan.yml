@@ -1,0 +1,47 @@
+parameters:
+- name: fossaProjectName
+  displayName: 'Mandatory Field*:Enter fossaProjectName'
+  type: string
+- name: failOnIssues
+  type: boolean
+  default: true
+
+steps:
+  - script: |
+      set -e
+      curl -H 'Cache-Control: no-cache' https://raw.githubusercontent.com/fossas/fossa-cli/master/install-latest.sh | bash
+      fossa --version
+    displayName: 'Install FOSSA CLI'
+
+  - script: |
+      set -e
+      fossa analyze --project '${{ parameters.fossaProjectName }}' --branch "$(Build.SourceBranchName)"
+    displayName: 'FOSSA Analyze (dependency scan)'
+    env:
+      FOSSA_API_KEY: $(FOSSA_API_KEY)
+
+  - script: |
+      set -o pipefail
+      mkdir -p fossa-report
+      fossa test --project '${{ parameters.fossaProjectName }}' --format json | tee fossa-report/fossa_issues.json
+    displayName: 'FOSSA Test (policy gate)'
+    env:
+      FOSSA_API_KEY: $(FOSSA_API_KEY)
+    condition: always()
+    continueOnError: ${{ eq(parameters.failOnIssues, false) }}
+
+  - script: |
+      set -e
+      mkdir -p fossa-report
+      fossa report attribution --format json --project '${{ parameters.fossaProjectName }}' > fossa-report/attribution.json
+    displayName: 'Generate FOSSA Attribution Report'
+    env:
+      FOSSA_API_KEY: $(FOSSA_API_KEY)
+    condition: always()
+
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish FOSSA Report'
+    inputs:
+      targetPath: 'fossa-report'
+      artifactName: 'FOSSA-Report'
+    condition: always()

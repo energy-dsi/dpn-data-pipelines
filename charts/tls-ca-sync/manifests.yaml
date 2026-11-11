@@ -1,0 +1,172 @@
+# dpn-tls CA auto-sync
+#
+# ns-dpn-dp-01's self-service/producer/consumer pods trust Kafka/Keycloak
+# via a local COPY of the `dpn-tls` secret (ca.crt, plus tls.crt/tls.key
+# where a pod terminates TLS itself, e.g. Keycloak/oauth2-proxy — see
+# service/README.md's Keycloak section), issued/rotated in ns-dpn-01 by
+# dpn-certificate-manager. Kubernetes Secrets are strictly namespace-
+# scoped — there is no such thing as a cross-namespace secretKeyRef/volume
+# reference, so ns-dpn-dp-01's pods cannot mount ns-dpn-01's Secret object
+# directly no matter how RBAC is configured; a real, separate Secret object
+# has to exist in ns-dpn-dp-01 itself, kept in sync by something. That's
+# what this Deployment is: a small controller watching (not polling) the
+# source secret in ns-dpn-01 and mirroring its `data` into ns-dpn-dp-01's
+# own copy — no fixed interval, nothing runs "just in case". On a real
+# change it merge-patches only the `data` field of the ns-dpn-dp-01 copy —
+# metadata/labels/annotations (including the Helm ownership annotations on
+# the self-service-managed secret) are left untouched, so `helm upgrade` on
+# the self-service chart keeps working. Nothing in ns-dpn-01 is created,
+# modified, or deleted; the ClusterRole below only grants read access to it.
+#
+# When that secret rotates in ns-dpn-01, the stale copy here causes SSL
+# handshake / OIDC token failures until someone manually re-syncs it (see
+# 2026-09-04 incident: eqbd-pg-gas and all consumer pods lost Kafka/
+# Keycloak trust after a ns-dpn-01 redeploy) — this closes that gap.
+#
+# create-if-absent (see sync_once() below): a genuinely fresh ns-dpn-dp-01
+# has no dpn-tls secret at all yet — nothing in this repo's charts creates
+# one (every chart only ever mounts it, see e.g.
+# service/charts/templates/deployment.yaml), so the very first sync has to
+# create it, not merge-patch a secret that doesn't exist. Mirrors
+# health-manifests.yaml's dpn-health-ca-sync, which already gets this
+# right for the same reason.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dpn-tls-ca-sync
+  namespace: ns-dpn-dp-01
+---
+# Cluster-scoped because RBAC has no namespaced way to grant read access to
+# a resource that lives in a *different* namespace. Scoped down via
+# resourceNames to only the secret literally named "dpn-tls", in any
+# namespace it exists in — not "secrets" cluster-wide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dpn-tls-ca-sync-reader
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["dpn-tls"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dpn-tls-ca-sync-reader-binding
+subjects:
+  - kind: ServiceAccount
+    name: dpn-tls-ca-sync
+    namespace: ns-dpn-dp-01
+roleRef:
+  kind: ClusterRole
+  name: dpn-tls-ca-sync-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# Namespaced — write access is only ever needed inside ns-dpn-dp-01,
+# where this job's own target secret lives. "create" is needed (unlike a
+# plain get/patch pair) because a genuinely fresh ns-dpn-dp-01 has no
+# dpn-tls secret yet — see this file's header; resourceNames has no effect
+# on "create" but is kept for the get/patch verbs it does constrain.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dpn-tls-ca-sync-writer
+  namespace: ns-dpn-dp-01
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["dpn-tls"]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dpn-tls-ca-sync-writer-binding
+  namespace: ns-dpn-dp-01
+subjects:
+  - kind: ServiceAccount
+    name: dpn-tls-ca-sync
+    namespace: ns-dpn-dp-01
+roleRef:
+  kind: Role
+  name: dpn-tls-ca-sync-writer
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpn-tls-ca-sync
+  namespace: ns-dpn-dp-01
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dpn-tls-ca-sync
+  template:
+    metadata:
+      labels:
+        app: dpn-tls-ca-sync
+    spec:
+      serviceAccountName: dpn-tls-ca-sync
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: sync
+          image: alpine/k8s:1.29.2
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          command:
+            - sh
+            - -ec
+            - |
+              sync_once() {
+                SRC_DATA=$(kubectl get secret dpn-tls -n ns-dpn-01 -o json | jq -c '.data')
+                if kubectl get secret dpn-tls -n ns-dpn-dp-01 >/dev/null 2>&1; then
+                  DST_DATA=$(kubectl get secret dpn-tls -n ns-dpn-dp-01 -o json | jq -c '.data')
+                  if [ "$SRC_DATA" != "$DST_DATA" ]; then
+                    kubectl patch secret dpn-tls -n ns-dpn-dp-01 --type merge -p "{\"data\": $SRC_DATA}"
+                    echo "$(date -u +%FT%TZ) dpn-tls CA synced: ns-dpn-01 -> ns-dpn-dp-01 (content changed)"
+                  fi
+                else
+                  # Fresh namespace, no dpn-tls secret yet — every chart
+                  # only ever mounts this secret, none of them create it
+                  # (see this file's header), so the first sync has to.
+                  kubectl create secret generic dpn-tls -n ns-dpn-dp-01 --dry-run=client -o json |
+                    jq --argjson d "$SRC_DATA" '.data = $d' |
+                    kubectl create -f -
+                  echo "$(date -u +%FT%TZ) dpn-tls created: ns-dpn-01 -> ns-dpn-dp-01 (first sync)"
+                fi
+              }
+
+              # Reconcile once on startup (covers drift that happened while
+              # this pod wasn't running), then block on a real API-server
+              # watch — every loop iteration below corresponds to an actual
+              # ADDED/MODIFIED event on the secret, never a timer tick. The
+              # watch is re-established if it drops (the apiserver closes
+              # watches after ~30-60m by design), so this runs forever with
+              # zero polling in between events.
+              sync_once
+              while true; do
+                kubectl get secret dpn-tls -n ns-dpn-01 -o name --watch-only |
+                  while read -r _; do sync_once; done
+                echo "$(date -u +%FT%TZ) watch connection closed, reconnecting..."
+                sleep 2
+              done

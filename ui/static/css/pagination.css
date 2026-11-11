@@ -1,0 +1,127 @@
+/* Shared scroll + pagination bar for any table opted in via
+   `data-paginate="<page size>"` on the <table> element itself. See
+   /static/js/table-pagination.js, which reads that attribute and wraps/paginates
+   the table at runtime — this file only supplies the look.
+   Visual spec: Figma "SF-Pagination" / "Horizontal Scroll Slider"
+   (DSI--for-Export-_Sept21, node 5995:114897 / 5995:114899). */
+
+.table-scroll {
+  max-height: 420px;
+  overflow-y: auto;
+  overflow-x: auto;
+  margin-top: 1rem;
+}
+
+.table-scroll table {
+  margin-top: 0;
+  border: none;
+}
+
+.table-scroll th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+/* Thin pill scrollbar (WebKit/Blink only — Firefox falls back to its
+   native scrollbar, since it has no equivalent pseudo-elements). */
+.table-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--dpn-border-strong) transparent;
+}
+
+.table-scroll::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.table-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.table-scroll::-webkit-scrollbar-thumb {
+  background-color: var(--dpn-border-strong);
+  background-clip: padding-box;
+  border-radius: var(--dpn-radius-pill);
+}
+
+.table-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  background: #fff;
+  border-bottom: 2px solid #d2d2d2;
+  padding: 0 16px 0 12px;
+  font-family: "Poppins", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+.pagination-summary {
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
+  color: #000;
+  white-space: nowrap;
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 100%;
+}
+
+.pagination-pages {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 24px;
+  color: #000;
+  white-space: nowrap;
+}
+
+.pagination-divider {
+  width: 1px;
+  height: 100%;
+  background: #d2d2d2;
+  flex-shrink: 0;
+}
+
+.pagination-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.pagination-btn img {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.pagination-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Blend into the Carbon-style dpn-table-wrap instead of doubling its border
+   (dpn-table-wrap already supplies the outer border/radius via layout.css). */
+.dpn-table-wrap .dpn-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.dpn-table-wrap .pagination-bar {
+  border-bottom: none;
+}

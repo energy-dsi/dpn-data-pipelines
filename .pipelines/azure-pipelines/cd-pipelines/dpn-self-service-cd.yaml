@@ -1,0 +1,297 @@
+
+# Deploy-only pipeline for the self-service architecture on AKS. Deploys
+# whatever ../ci-pipelines/dpn-self-service-ci.yaml already scanned,
+# tested, built, and pushed for the given imageTag — this pipeline never
+# runs `docker build`/`docker push` itself, only `helm upgrade`.
+#   - 2 generic producer images, one per pathway (file adaptor, topic
+#     adaptor) — NOT helm-deployed here: producer instances are created
+#     dynamically by the self-service UI (service/k8s_ops.py) when a
+#     business user creates a data product, not by this pipeline.
+#   - 2 consumer images, one per pathway (file extractor, topic
+#     extractor) — helm-deployed as the fixed platform singletons (see
+#     service/README.md — "single consumer for file, single for topic").
+#   - 1 self-service UI image — helm-deployed.
+#
+# Run ../ci-pipelines/dpn-self-service-ci.yaml first for a given imageTag;
+# this pipeline assumes those 5 images already exist in ACR under that tag.
+
+trigger:
+- none
+
+pool:
+  name: '<<YOUR AGENT POOL>>'
+
+parameters:
+- name: environment
+  displayName: 'Select Environment'
+  type: string
+  default: dev
+  values:
+    - dev
+    - devtest
+    - test
+    - pdev
+    - ptest
+    - puat
+- name: cluster
+  displayName: 'Choose DPN Cluster'
+  type: string
+  default: dpn01
+  values:
+    - dpn01
+    - dpn02
+- name: ServiceConnection
+  displayName: 'ServiceConnection details'
+  type: string
+  default: 'sc-dpn-dev-001'
+  values:
+    - sc-dpn-dev-001
+    - sc-dpn-dev-002
+    - sc-dpn-test-001
+    - sc-dpn-test-002
+    - sc-dpn-pdev-ppd-001
+    - sc-dpn-ptest-ppd-001
+    - sc-dpn-puat-ppd-001
+- name: imageTag
+  type: string
+  displayName: 'Image Tag To Deploy (already built/pushed by dpn-self-service-ci.yaml)'
+
+variables:
+- name: PARAMETERS_FILE
+  value: '.pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.cluster }}.json'
+- name: IMAGE_TAG
+  value: ${{ parameters.imageTag }}
+- name: PRODUCER_NAMESPACE
+  value: ns-dpn-dp-01
+# One approver group per environment value — same mapping
+# dpn-self-service-rollback/uninstall-cd.yaml and dpn-data-pipeline-rollback.yaml
+# already use — resolved at compile time so it can bind the Deploy job's
+# environment: below directly, not via a runtime macro.
+- ${{ if eq(parameters.environment, 'dev') }}:
+  - name: APPROVAL_GROUP
+    value: dsi-dev
+- ${{ elseif eq(parameters.environment, 'devtest') }}:
+  - name: APPROVAL_GROUP
+    value: dsi-devtest
+- ${{ elseif eq(parameters.environment, 'test') }}:
+  - name: APPROVAL_GROUP
+    value: dsi-test
+- ${{ else }}:
+  - name: APPROVAL_GROUP
+    value: dsi-ppd
+
+stages:
+# -----------------------------
+# Stage — Deploy
+# -----------------------------
+# One approval, not two: this deployment job's own `environment:` below IS
+# the approval gate (requires an approval check configured on the
+# dsi-devtest / dsi-ppd ADO Environment — Project Settings > Environments >
+# Approvals and checks — one-time setup, not something this YAML can
+# provision). There used to be a separate preceding "Approval" stage that
+# also targeted this same Environment; that meant approving twice for one
+# deploy, since ADO's environment check fires per deployment-job execution,
+# not once per pipeline run. Folding it into this one job is also what
+# closes the "Run stage" bypass a plain job + dependsOn alone can't prevent
+# — see dpn-self-service-rollback.yaml's Rollback stage for the same
+# single-gate pattern.
+- stage: Deploy
+  displayName: "Deploy"
+  jobs:
+  - deployment: Deploy
+    displayName: "Helm Deploy — consumer singletons + self-service UI"
+    ${{ if eq(parameters.environment, 'dev') }}:
+      environment: dsi-dev
+    ${{ elseif eq(parameters.environment, 'devtest') }}:
+      environment: dsi-devtest
+    ${{ elseif eq(parameters.environment, 'test') }}:
+      environment: dsi-test
+    ${{ else }}:
+      environment: dsi-ppd
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+
+          - script: |
+              echo "===================================================="
+              echo "DPN SELF-SERVICE DEPLOY — APPROVED, DEPLOYING"
+              echo "===================================================="
+              echo "Environment    : ${{ parameters.environment }}"
+              echo "Cluster        : ${{ parameters.cluster }}"
+              echo "Namespace      : $(PRODUCER_NAMESPACE)"
+              echo "Image Tag      : ${{ parameters.imageTag }}"
+              echo "Approval Group : $(APPROVAL_GROUP)"
+              echo "===================================================="
+            displayName: "Deploy Context"
+
+          - script: |
+              if [ -f "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)" ]; then
+                for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+                  value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+                  echo "##vso[task.setvariable variable=$param]$value"
+                done
+              else
+                echo "Error: $(PARAMETERS_FILE) not found!"; exit 1
+              fi
+            displayName: "Read Environment Variables"
+
+          - task: AzureCLI@2
+            displayName: 'AKS Auth'
+            inputs:
+              azureSubscription: ${{ parameters.ServiceConnection }}
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -euo pipefail
+                az account set --subscription $(AZURE_SUBSCRIPTION_ID)
+
+                KUBECTL_VERSION="v1.32.4"
+                KUBELOGIN_VERSION="v0.1.4"
+                HELM_VERSION="v3.17.3"
+
+                # kubectl and kubelogin are checked (and, if missing, installed)
+                # independently — `az aks install-cli` installs both together, but
+                # this agent image ships kubectl pre-installed without kubelogin,
+                # so gating the install on kubectl alone left kubelogin missing
+                # ("kubelogin: command not found" on the convert-kubeconfig step
+                # below) even though the kubectl check itself passed.
+                command -v kubectl &>/dev/null || az aks install-cli --client-version ${KUBECTL_VERSION} --kubelogin-version ${KUBELOGIN_VERSION}
+                command -v kubelogin &>/dev/null || az aks install-cli --client-version ${KUBECTL_VERSION} --kubelogin-version ${KUBELOGIN_VERSION}
+                command -v helm &>/dev/null || curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | DESIRED_VERSION=${HELM_VERSION} bash
+
+                az aks get-credentials --resource-group $(RESOURCE_GROUP) --name $(AKS_CLUSTER) --overwrite-existing
+                kubelogin convert-kubeconfig -l azurecli
+
+          - task: AzureCLI@2
+            displayName: 'Helm Deploy'
+            inputs:
+              azureSubscription: ${{ parameters.ServiceConnection }}
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -euo pipefail
+
+                # No explicit namespace create/apply here: ns-dpn-01 already exists
+                # (it's the pre-existing namespace from the original architecture),
+                # and creating/patching a Namespace object is a cluster-scoped
+                # operation the pipeline's service principal isn't granted — it
+                # only has namespace-scoped roles for deploying resources *inside*
+                # existing namespaces (see build 249695: "cannot patch resource
+                # \"namespaces\"" against ns-dpn-01 itself, not anything inside it).
+                # The old dsi-data-pipelines-cd.yaml never creates namespaces
+                # either, for the same reason.
+
+                # --- Consumer singletons ---
+                # imageName overrides each chart's own values.yaml default (e.g.
+                # "consumer-file-extractor") to match what CI actually pushed
+                # (dpn-consumer-file-extractor).
+                #
+                # imageRegistry, not acrName: both charts' templates/deployment.yaml
+                # now render "{{ .Values.imageRegistry }}/{{ .Values.imageName }}:..."
+                # with no acrName/.azurecr.io fallback left in the template at all
+                # (see blueprints/consumer/{file,topic}/extractor/charts' own
+                # history) — passing acrName here left imageRegistry at its empty
+                # chart default, rendering "image: /dpn-consumer-...:tag" and
+                # failing to pull. imageRegistry must carry the full path (the
+                # template no longer appends .azurecr.io/dsi itself), matching
+                # the self-service deploy below and the GCP pipeline's equivalent
+                # step, which already passes imageRegistry correctly.
+                helm upgrade --install dpn-consumer-file-extractor blueprints/consumer/file/extractor/charts \
+                  --set namespace=$(PRODUCER_NAMESPACE),imageRegistry="$(ACR_NAME).azurecr.io/dsi",imageTag="$(IMAGE_TAG)" \
+                  --set imageName=dpn-consumer-file-extractor -n $(PRODUCER_NAMESPACE)
+
+                helm upgrade --install dpn-consumer-topic-extractor blueprints/consumer/topic/extractor/charts \
+                  --set namespace=$(PRODUCER_NAMESPACE),imageRegistry="$(ACR_NAME).azurecr.io/dsi",imageTag="$(IMAGE_TAG)" \
+                  --set imageName=dpn-consumer-topic-extractor -n $(PRODUCER_NAMESPACE)
+
+                # --- Self-service UI ---
+                # Keycloak auth (oauth2Proxy) + HTTPS are ON by default, and
+                # this pipeline packages the whole bootstrap sequence itself
+                # — no manual kubectl/config-file round trip required any
+                # more. oauth2Proxy.externalUrl (the browser-facing address
+                # oauth2-proxy registers with Keycloak as its redirect URI)
+                # isn't known until dpn-self-service-external's LoadBalancer
+                # IP is assigned, so:
+                #   1. If OAUTH2_PROXY_EXTERNAL_URL is set in this
+                #      environment's config JSON (e.g. a stable DNS name
+                #      pointed at the LB), use it as-is — no discovery needed.
+                #   2. Otherwise, check whether dpn-self-service-external
+                #      already has an IP from a previous deploy of this same
+                #      release (LoadBalancer Services keep their IP across
+                #      `helm upgrade`s) and reuse it.
+                #   3. Otherwise this is a genuinely first-ever deploy: run
+                #      once with oauth2Proxy off just to create the Service,
+                #      poll for AKS to assign it an IP, then redeploy this
+                #      same release with oauth2Proxy on and that IP as
+                #      externalUrl — all inside this one pipeline run.
+                # Still requires the one-time Keycloak client config
+                # (standard flow + redirect URIs) documented in
+                # service/README.md's "Keycloak authentication" section —
+                # this only wires the deploy side, not the Keycloak side.
+                deploy_self_service() {
+                  local oauth2_enabled="$1"
+                  local external_url="$2"
+                  # env.DPN_CLOUD_PROVIDER / loadBalancer.cloud are set explicitly
+                  # to "azure" here — this is the AKS pipeline, so both must always
+                  # resolve to azure regardless of chart defaults, exactly the way
+                  # the AWS/GCP CD pipelines set them to "aws"/"gcp" instead. Left
+                  # at the wrong default, the registry's disaster-recovery restore
+                  # at startup (service/registry_backup.py) tries the wrong cloud's
+                  # storage API with no matching credentials and crash-loops the pod
+                  # before /healthz ever answers.
+                  helm upgrade --install dpn-self-service service/charts \
+                    --set namespace=$(PRODUCER_NAMESPACE),producerNamespace=$(PRODUCER_NAMESPACE) \
+                    --set acrName="$(ACR_NAME)",imageTag="$(IMAGE_TAG)",imageName=dpn-self-service \
+                    --set env.DPN_IMAGE_REGISTRY="$(ACR_NAME).azurecr.io/dsi" \
+                    --set env.DPN_IMAGE_TAG="$(IMAGE_TAG)" \
+                    --set env.DPN_IMAGE_NAME_PREFIX=dpn \
+                    --set env.DPN_NAMESPACE=$(PRODUCER_NAMESPACE) \
+                    --set env.DPN_CLOUD_PROVIDER=azure \
+                    --set loadBalancer.cloud=azure \
+                    --set oauth2Proxy.enabled="$oauth2_enabled" \
+                    --set oauth2Proxy.tls.enabled="$oauth2_enabled" \
+                    --set oauth2Proxy.externalUrl="$external_url" \
+                    -n $(PRODUCER_NAMESPACE)
+
+                  kubectl rollout status deployment/dpn-self-service -n $(PRODUCER_NAMESPACE) --timeout=180s
+                }
+
+                lb_ip() {
+                  kubectl get svc dpn-self-service-external -n $(PRODUCER_NAMESPACE) \
+                    -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true
+                }
+
+                EXTERNAL_URL="$(OAUTH2_PROXY_EXTERNAL_URL)"
+
+                if [ -z "$EXTERNAL_URL" ]; then
+                  EXISTING_IP=$(lb_ip)
+                  if [ -n "$EXISTING_IP" ]; then
+                    EXTERNAL_URL="https://${EXISTING_IP}"
+                    echo "Reusing dpn-self-service-external's existing LoadBalancer IP: $EXTERNAL_URL"
+                  fi
+                fi
+
+                if [ -n "$EXTERNAL_URL" ]; then
+                  deploy_self_service true "$EXTERNAL_URL"
+                else
+                  echo "No known LoadBalancer address yet for this environment — deploying once with Keycloak auth/HTTPS off to create the Service, then waiting for AKS to assign it an IP."
+                  deploy_self_service false ""
+
+                  DISCOVERED_IP=""
+                  for _ in $(seq 1 18); do
+                    DISCOVERED_IP=$(lb_ip)
+                    [ -n "$DISCOVERED_IP" ] && break
+                    sleep 10
+                  done
+
+                  if [ -n "$DISCOVERED_IP" ]; then
+                    EXTERNAL_URL="https://${DISCOVERED_IP}"
+                    echo "LoadBalancer IP assigned: $EXTERNAL_URL — redeploying with Keycloak auth/HTTPS on."
+                    deploy_self_service true "$EXTERNAL_URL"
+                    echo "##vso[task.logissue type=warning]Keycloak auth/HTTPS enabled automatically at $EXTERNAL_URL. Register <that URL>/oauth2/callback and <that URL> as redirect/post-logout URIs on Keycloak's dpn-service-client (see service/README.md's Keycloak authentication section) — login will not work until that one-time manual step is done."
+                  else
+                    echo "##vso[task.logissue type=warning]dpn-self-service-external had no LoadBalancer IP after 3 minutes — deployed with Keycloak auth/HTTPS OFF. Re-run this pipeline once AKS has assigned one; it will be picked up automatically next time."
+                  fi
+                fi

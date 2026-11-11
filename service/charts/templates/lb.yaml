@@ -1,0 +1,51 @@
+{{- if .Values.loadBalancer.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.name }}-external
+  namespace: {{ .Values.namespace }}
+  annotations:
+    {{- if .Values.loadBalancer.internal }}
+    {{- if eq .Values.loadBalancer.cloud "aws" }}
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    {{- else if eq .Values.loadBalancer.cloud "gcp" }}
+    # GKE's in-tree annotation is a string value, not a boolean like the
+    # AWS/Azure ones above — "Internal" is the only value that means
+    # internal-only; anything else (including "true") is ignored and the
+    # LB comes up external.
+    networking.gke.io/load-balancer-type: "Internal"
+    {{- else }}
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+    {{- end }}
+    {{- end }}
+spec:
+  type: LoadBalancer
+  {{- if .Values.loadBalancer.loadBalancerIP }}
+  loadBalancerIP: <<your specific value>>
+  {{- end }}
+  selector:
+    # With oauth2Proxy.enabled (off by default — see values.yaml; flipped on
+    # per environment once oauth2Proxy.externalUrl is known), the browser
+    # must hit the Keycloak gate before it ever reaches this UI's own pods,
+    # so the external LB now targets oauth2-proxy's pods instead of this
+    # app's directly. templates/service.yaml's ClusterIP Service (still
+    # pointed at the app itself) becomes oauth2-proxy's upstream instead of
+    # the browser-facing address.
+    {{- if .Values.oauth2Proxy.enabled }}
+    app: {{ .Values.name }}-oauth2-proxy
+    {{- else }}
+    app: {{ .Values.name }}
+    {{- end }}
+  ports:
+    {{- if and .Values.oauth2Proxy.enabled .Values.oauth2Proxy.tls.enabled }}
+    - name: https
+      port: 443
+      targetPort: {{ .Values.oauth2Proxy.tls.servicePort }}
+      protocol: TCP
+    {{- else }}
+    - name: http
+      port: 80
+      targetPort: {{ if .Values.oauth2Proxy.enabled }}{{ .Values.oauth2Proxy.servicePort }}{{ else }}{{ .Values.servicePort }}{{ end }}
+      protocol: TCP
+    {{- end }}
+{{- end }}

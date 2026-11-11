@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "_icons.html" import document as document_icon, chevron %}
+
+{% block title %}{{ product.product_type }} — Logs{% endblock %}
+
+{% block content %}
+  <div class="dpn-page-header">
+    <span class="dpn-page-header__icon">{{ document_icon() }}</span>
+    <div>
+      <h1>{{ product.product_type }}</h1>
+      <p>Adaptor container logs for this data product.</p>
+    </div>
+  </div>
+
+  <nav class="dpn-tabs">
+    <a class="dpn-tab is-active" href="/producer-pipelines" title="Producer Pipelines">Producer Pipelines</a>
+    <a class="dpn-tab" href="/consumer-pipelines" title="Consumer Pipelines">Consumer Pipelines</a>
+    <a class="dpn-tab" href="/run-history?role=producer&amp;limit=50" title="Run History">Run History</a>
+  </nav>
+
+  <nav class="dpn-breadcrumbs">
+    <a class="dpn-breadcrumbs__back" href="/producer-pipelines" title="Back">{{ chevron() }}</a>
+    <a class="dpn-breadcrumbs__item" href="/producer-pipelines" title="Producer Pipelines">Producer Pipelines</a>
+    <span class="dpn-breadcrumbs__sep">/</span>
+    <span class="dpn-breadcrumbs__item is-current">{{ product.product_type }}</span>
+  </nav>
+
+  <h2 class="dpn-subpage-title">Adaptor</h2>
+  <div class="dpn-log-panel"><pre>{{ adaptor_logs or "(no logs yet)" }}</pre></div>
+{% endblock %}

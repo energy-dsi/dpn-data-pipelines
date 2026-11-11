@@ -1,0 +1,33 @@
+fastapi>=0.119.0
+uvicorn==0.34.0
+jinja2>=3.1.6
+python-multipart>=0.0.31
+pydantic==2.10.4
+kubernetes==36.0.3
+# fastapi.testclient.TestClient (tests/service_test/) is built on httpx, not
+# requests — needed to exercise ui/app.py's routes without a running server.
+httpx==0.28.1
+# Registry disaster-recovery backup/restore (service/registry_backup.py) —
+# same pins as the repo-root requirements.txt the blueprint images use, so
+# there's one version of each SDK to track across this repo.
+boto3==1.42.79
+azure-storage-blob==12.28.0
+google-cloud-storage==3.10.1
+# service/precheck.py reuses utils/topic_utils.py and utils/data_transection.py
+# (same pins as the repo-root requirements.txt) — confluent-kafka for the
+# topic existence check, cryptography for utils/kafka_truststore.py's lazy
+# PKCS12 parsing (triggered because this pod already mounts dpn-tls's
+# truststore.jks — see service/charts/templates/deployment.yaml). Unlike the
+# Alpine-based adaptor images, this image is Debian-based (python:3.12-slim),
+# so confluent-kafka installs from a prebuilt manylinux wheel — no
+# gcc/librdkafka-dev build toolchain needed here.
+confluent-kafka==2.3.0
+cryptography==50.0.0
+# service/lifecycle_events.py drives dpn_observability_sdk/otel_logger.py's
+# real OTLP export path (LoggerProvider/OTLPLogExporter), not just stdlib
+# logging — same pins as the repo-root requirements.txt the blueprint
+# images use, so this image's OtelLogger.create_logger() actually has the
+# SDK available instead of silently no-op'ing.
+opentelemetry-api==1.42.1
+opentelemetry-sdk==1.42.1
+opentelemetry-exporter-otlp==1.42.1

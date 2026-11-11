@@ -1,0 +1,11 @@
+{#
+Fragment used only by _unhandled_exception (ui/app.py) when an unhandled
+exception hits a request tagged X-DPN-Panel-Request: 1 — i.e. the New Data
+Product flow's fetch()-based Step 1/confirm submit (inline-review.js).
+That script's mergeFormErrors() only ever looks for a `.dpn-alert--error`
+element in the response body to merge onto the form already on screen, so
+this is deliberately just that — no base.html chrome, no traceback (this
+is what the user, not just a local developer, sees when a create action
+itself fails).
+#}
+<div class="dpn-alert--error">{{ exc_type }}{% if exc_message %}: {{ exc_message }}{% endif %}</div>

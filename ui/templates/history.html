@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% from "_icons.html" import history as history_icon %}
+
+{% block title %}DPN Data Product Pipelines{% if product_type %} — {{ product_type }}{% endif %}{% endblock %}
+
+{% block content %}
+  <div class="dpn-page-header">
+    <span class="dpn-page-header__icon">{{ history_icon() }}</span>
+    <div>
+      <h1>Run History{% if product_type %} — {{ product_type }}{% endif %}</h1>
+      <p>
+        Create, manage and monitor your data product pipelines
+      </p>
+    </div>
+  </div>
+
+  <nav class="dpn-tabs">
+    <a class="dpn-tab {% if active == 'producer' %}is-active{% endif %}" href="/producer-pipelines" title="Producer Pipelines">Producer Pipelines</a>
+    <a class="dpn-tab {% if active == 'consumer' %}is-active{% endif %}" href="/consumer-pipelines" title="Consumer Pipelines">Consumer Pipelines</a>
+    <a class="dpn-tab {% if active == 'history' %}is-active{% endif %}" href="/run-history?role=producer&amp;limit=50" title="Run History">Run History</a>
+  </nav>
+
+  <h2 style="margin: 0 0 6px; font-size: 22px; font-weight: 500;">Run History Logs</h2>
+  <p style="margin: 0 0 20px; color: var(--dpn-text-secondary); font-size: 15px;">
+    View the latest runs across all your producer and consumer pipelines. <playbook link>
+    <a href="https://github.com/energy-dsi/dpn-integration-playbook" target="_blank" rel="noopener" style="text-decoration: underline;">See more</a>
+  </p>
+
+  {# .dpn-history-loader is the spinner shown over the existing (dimmed)
+     content while a filter fetch is in flight — see layout.css's "Run
+     History: AJAX filter loading state" section. It has to live outside
+     #dpn-history-results-content: that's the element run-history.js
+     overwrites wholesale on every role/limit/product filter click (see
+     ui/app.py's history() route, which returns just
+     _run_history_results.html's fragment when it sees the
+     X-DPN-History-Request header) — if the loader were inside it, the
+     first swap would replace it along with everything else and there'd be
+     no loader left to show on the next click. #}
+  <div id="dpn-history-results" class="dpn-history-results">
+    <div class="dpn-history-loader" aria-hidden="true"></div>
+    <div id="dpn-history-results-content">
+      {% include "_run_history_results.html" %}
+    </div>
+  </div>
+{% endblock %}

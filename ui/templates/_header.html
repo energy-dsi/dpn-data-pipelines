@@ -1,0 +1,24 @@
+{#
+Reusable top header — logo mark + signed-in identity/logout, matching the
+"User Account Button" in the Figma file's "Nav Bar" frame (node 5995:114491).
+Expects the identity context every page already builds via ui/app.py's
+_identity(): username, is_operator, logout_url. Role/group names are
+intentionally not displayed here.
+#}
+{% from "_icons.html" import user %}
+<header class="dpn-header">
+  <a class="dpn-header__logo" href="https://dpn-observability.ns-dpn-health-01.svc.cluster.local:8443" title="Producer Pipelines">
+    <span>Logo</span>
+    <span>Placeholder</span>
+  </a>
+
+  <div class="dpn-header__identity">
+    {% if username %}
+      <div class="dpn-header__account">
+        <span class="dpn-header__account-icon">{{ user() }}</span>
+        <span>{{ username }}</span>
+      </div>
+      <a class="dpn-header__logout" href="{{ logout_url }}">Log out</a>
+    {% endif %}
+  </div>
+</header>

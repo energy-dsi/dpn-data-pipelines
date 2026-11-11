@@ -1,0 +1,93 @@
+parameters:
+- name: cxoneserviceName
+  displayName: 'Mandatory Field*:Enter cxoneserviceName'
+  type: string
+- name: cxoneProjectName
+  displayName: 'Mandatory Field*:Enter cxoneProjectName'
+  type: string
+- name: cxoneProjectGroup
+  displayName: 'Mandatory Field*:Enter cxoneTenantName'
+  type: string
+- name: cxoneTenantName
+  displayName: 'Mandatory Field*:Enter cxoneTenantName'
+  type: string
+- name: scanType
+  type: string
+  default: 'sast'
+- name: excludeFolders
+  type: string
+  default: ''
+- name: filterPattern
+  type: string
+  default: ''
+- name: SevHigh
+  type: string
+  default: ''
+- name: SevMedium
+  type: string
+  default: ''
+- name: SevLow
+  type: string
+  default: ''
+- name: appName
+  displayName: 'appName'
+  type: string
+
+steps:
+  - task: Checkmarx AST@3
+    displayName: 'Checkmarx One Full Scan'
+    condition: and( ne('${{ parameters.scanType }}', 'sast'), ne('${{ parameters.scanType }}', 'iac'), ne('${{ parameters.scanType }}', 'sca'))
+    inputs:
+      CheckmarxService: '${{ parameters.cxoneserviceName }}'
+      projectName: '${{ parameters.cxoneProjectName }}'
+      branchName: '$(Build.SourceBranchName)'
+      tenantName: '${{ parameters.cxoneTenantName }}'
+      # Previous (before excluding the 'containers' engine, which is currently
+      # crashing on the Checkmarx One backend with:
+      # "System.ApplicationException: An error occured at one of the images
+      # analysis flows. Terminate scan" -- confirmed as a platform-side issue,
+      # reproduced on unrelated branches with no shared code changes):
+      # additionalParams: "--project-groups '${{parameters.cxoneProjectGroup}}' --tags 'NESO' --file-filter '${{ parameters.excludeFolders }}' --file-include '${{ parameters.filterPattern }}' --sast-incremental --report-format 'PDF' "
+      additionalParams: "--project-groups '${{parameters.cxoneProjectGroup}}' --tags 'NESO' --file-filter '${{ parameters.excludeFolders }}' --file-include '${{ parameters.filterPattern }}' --sast-incremental --scan-types sast,kics,sca --report-format 'PDF' "
+    enabled: true
+
+  - task: Checkmarx AST@3
+    displayName: 'Checkmarx One SAST Scan'
+    condition: eq('${{ parameters.scanType }}', 'sast')
+    inputs:
+      CheckmarxService: '${{ parameters.cxoneserviceName }}'
+      projectName: '${{ parameters.cxoneProjectName }}'
+      branchName: '$(Build.SourceBranchName)'
+      tenantName: '${{ parameters.cxoneTenantName }}'
+      additionalParams: "--project-groups '${{parameters.cxoneProjectGroup}}' --tags 'NESO' --file-filter '${{ parameters.excludeFolders }}' --file-include '${{ parameters.filterPattern }}' --sast-incremental --scan-types sast --report-format 'PDF' "
+    enabled: true
+
+  - task: Checkmarx AST@3
+    displayName: 'Checkmarx One IAC Scan'
+    condition: eq('${{ parameters.scanType }}', 'iac')
+    inputs:
+      CheckmarxService: '${{ parameters.cxoneserviceName }}'
+      projectName: '${{ parameters.cxoneProjectName }}'
+      branchName: '$(Build.SourceBranchName)'
+      tenantName: '${{ parameters.cxoneTenantName }}'
+      additionalParams: "--project-groups '${{parameters.cxoneProjectGroup}}' --tags 'NESO' --file-filter '${{ parameters.excludeFolders }}' --file-include '${{ parameters.filterPattern }}' --sast-incremental --scan-types iac-security --report-format 'PDF' "
+    enabled: true
+
+  - task: Checkmarx AST@3
+    displayName: 'Checkmarx One SCA Scan'
+    condition: eq('${{ parameters.scanType }}', 'sca')
+    inputs:
+      CheckmarxService: '${{ parameters.cxoneserviceName }}'
+      projectName: '${{ parameters.cxoneProjectName }}'
+      branchName: '$(Build.SourceBranchName)'
+      tenantName: '${{ parameters.cxoneTenantName }}'
+      additionalParams: "--project-groups '${{parameters.cxoneProjectGroup}}' --tags 'NESO' --file-filter '${{ parameters.excludeFolders }}' --file-include '${{ parameters.filterPattern }}' --sast-incremental --scan-types sca --report-format 'PDF' "
+    enabled: true
+  
+  - task: PublishPipelineArtifact@1
+    displayName: 'Export CxOne Scan Report'
+    inputs:
+      targetPath: '$(Pipeline.Workspace)/s/cx_result.pdf'
+      artifact: '${{ parameters.appName }}-CxOneScan-Report'
+      publishLocation: 'pipeline'
+    enabled: true

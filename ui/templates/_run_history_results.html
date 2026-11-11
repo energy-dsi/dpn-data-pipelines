@@ -1,0 +1,94 @@
+{# Run History's filter bar + table — the part that re-renders on every
+   role/limit/product_type change. Rendered both as part of history.html's
+   full page (first load) and, fragment-only, as the response to
+   run-history.js's fetch() for every filter click afterwards (see
+   ui/app.py's history() route, which returns just this template when it
+   sees the X-DPN-History-Request header). Keeping this in one template
+   means both paths render identically — there's no separate "AJAX
+   version" of the markup to drift out of sync with the server-rendered
+   one. #}
+  {# Producer always renders first (left), Consumer always second (right) —
+     only each one's is-active state, label ("Currently viewing:" vs "Switch
+     to:") and href change with `role`. Earlier this branched on which whole
+     <span>/<a> came first, so the active side was always written left,
+     making the two boxes swap places every time the role flipped — fixed by
+     keeping both slots fixed and only toggling their content. #}
+  <div class="dpn-view-switch">
+    {% if role == 'producer' %}
+    <span class="dpn-view-switch__option is-active">
+      <span class="dpn-view-switch__label">Currently viewing:</span>
+      <span class="dpn-view-switch__value">Producer Pipeline</span>
+    </span>
+    {% else %}
+    <a class="dpn-view-switch__option" href="{{ producer_switch_url }}">
+      <span class="dpn-view-switch__value">Producer Pipeline</span>
+    </a>
+    {% endif %}
+    {% if role == 'consumer' %}
+    <span class="dpn-view-switch__option is-active">
+      <span class="dpn-view-switch__label">Currently viewing:</span>
+      <span class="dpn-view-switch__value">Consumer Pipeline</span>
+    </span>
+    {% else %}
+    <a class="dpn-view-switch__option" href="{{ consumer_switch_url }}">
+      <span class="dpn-view-switch__value">Consumer Pipeline</span>
+    </a>
+    {% endif %}
+  </div>
+
+  <div class="dpn-result-filter">
+    <span class="dpn-result-filter__label">Displaying results for:</span>
+    <div class="dpn-result-filter__group">
+      <a class="dpn-result-filter__btn {% if limit == 50 %}is-active{% endif %}" href="{{ limit_50_url }}">Latest 50 Runs</a>
+      <a class="dpn-result-filter__btn {% if limit == 100 %}is-active{% endif %}" href="{{ limit_100_url }}">Latest 100 Runs</a>
+    </div>
+  </div>
+
+  <div class="dpn-table-wrap">
+  <table class="dpn-table" data-paginate="20">
+    <thead>
+      <tr>
+        <th>Time (UTC)</th>
+        <th>Product</th>
+        <th>Stage</th>
+        <th>Event</th>
+        <th>Trigger</th>
+        <th>Operation</th>
+        <th>Duration (ms)</th>
+        <th>Run ID</th>
+        <th>Detail</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in runs %}
+      <tr>
+        <td>{{ run.timestamp }}</td>
+        <td><a href="/run-history?role={{ role }}&amp;product_type={{ run.product_type }}&amp;limit={{ limit }}" title="Filter run history to {{ run.product_type }}">{{ run.product_type }}</a></td>
+        <td>{{ run.stage }}</td>
+        <td>
+          {% if run.event == "pipeline.step.failed" %}
+          <span class="dpn-badge failed">failed</span>
+          {% elif run.event == "pipeline.cycle.complete" %}
+          <span class="dpn-badge cycle">cycle</span>
+          {% else %}
+          <span class="dpn-badge completed">completed</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if run.triggered_by == "manual" %}
+          <span class="dpn-badge manual">manual</span>
+          {% else %}
+          {{ run.triggered_by or "—" }}
+          {% endif %}
+        </td>
+        <td>{{ run.operation or "—" }}</td>
+        <td>{{ "%.0f"|format(run.duration_ms) if run.duration_ms else "—" }}</td>
+        <td><code>{{ (run.run_id or "")[:8] }}</code></td>
+        <td><code>{{ run.detail }}</code></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9">No runs recorded yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>

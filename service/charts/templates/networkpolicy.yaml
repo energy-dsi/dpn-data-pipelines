@@ -1,0 +1,45 @@
+# Without this, "nothing but oauth2-proxy can reach dpn-self-service:8000"
+# is true only by absence of any other route to it — any other pod in this
+# namespace (or anyone with kubectl port-forward/exec access) can call the
+# app directly over plain HTTP, bypassing oauth2-proxy entirely. That
+# matters because service/auth.py has no authentication of its own: it
+# trusts X-Forwarded-User/X-Forwarded-Groups/X-Forwarded-Preferred-Username
+# headers oauth2-proxy adds, with no shared secret tying them to oauth2-proxy
+# — a caller that reaches the backend directly can set those headers itself
+# and impersonate any user/role. Worse, if those headers are absent
+# entirely, is_open_access() treats that as "no proxy in front" and falls
+# back to fully open (by design, for local `uvicorn ui.app:app --reload`
+# with no oauth2-proxy running) — so a direct caller doesn't even need to
+# forge headers.
+#
+# Only rendered when oauth2Proxy.enabled — with it disabled, templates/
+# lb.yaml points the external LoadBalancer straight at this app's own pods
+# instead, so restricting ingress to "only oauth2-proxy" would cut off the
+# one legitimate path in.
+#
+# Kubelet-originated readiness/liveness probes (templates/deployment.yaml)
+# are not blocked by this: probes hit the pod's IP directly from the node,
+# which every mainstream CNI (Calico, Cilium, Azure CNI, AWS VPC CNI)
+# exempts from NetworkPolicy enforcement regardless of podSelector/from
+# rules — they never appear as traffic from another pod's identity.
+{{- if .Values.oauth2Proxy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Values.name }}-ingress
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ .Values.name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: {{ .Values.name }}-oauth2-proxy
+      ports:
+        - protocol: TCP
+          port: {{ .Values.servicePort }}
+{{- end }}

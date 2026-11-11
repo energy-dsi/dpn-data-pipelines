@@ -1,0 +1,15 @@
+{
+  "ACR_NAME": "ghcr.io",
+  "BASE_REGISTRY": "ghcr.io",
+  "AZURE_SUBSCRIPTION_ID": "<<your specific value>>",
+  "RESOURCE_GROUP": "<<your specific value>>",
+  "AKS_CLUSTER": "<<your specific value>>",
+  "KEY_VAULT_NAME": "<<your specific value>>",
+  "NAMESPACE": "ns-dpn-01",
+  "ARM_SUBSCRIPTION_ID": "<<your specific value>>",
+  "FILESCAN_STORAGE_ACCOUNT":"<<your specific value>>",
+  "FILESCAN_STORAGE_RG": "<<your specific value>>",
+  "FILESCAN_SB_SUBSCRIPTION_NAME": "dpn-fileupload-scan-results-sub",
+  "FILESCAN_DEFENDER_EVENT_SUBSCRIPTION_NAME": "dpn-defender-malware-scan-sub",
+  "OAUTH2_PROXY_EXTERNAL_URL": "https://dpn-self-service-external.ns-dpn-dp-01.svc.cluster.local"
+}

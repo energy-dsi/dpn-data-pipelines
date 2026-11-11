@@ -1,0 +1,28 @@
+{% from "_icons.html" import warning %}
+{#
+  Reusable "are you sure?" confirmation dialog — replaces the native
+  window.confirm() popup for destructive actions (currently: deleting a
+  data product on index.html) with the same animated-in-the-DOM styling as
+  _toast.html. Rendered once (hidden) per page; ui/static/js/confirm-modal.js
+  finds every `form.dpn-confirm-form` on the page, intercepts its submit,
+  and shows this dialog using that form's `data-confirm-title` (and
+  optional `data-confirm-message` for extra detail, hidden when omitted).
+  Confirming re-submits the originating form; cancelling (or the
+  backdrop/Escape) just closes the dialog.
+
+  Mark any destructive form with class="dpn-confirm-form" plus
+  data-confirm-title instead of an onsubmit="return confirm(...)" to opt in.
+#}
+<div class="dpn-modal-overlay" id="dpn-confirm-overlay" hidden>
+  <div class="dpn-modal dpn-modal--danger" role="alertdialog" aria-modal="true" aria-labelledby="dpn-confirm-title" aria-describedby="dpn-confirm-message">
+    <span class="dpn-modal__icon">{{ warning() }}</span>
+    <div class="dpn-modal__body">
+      <p class="dpn-modal__title" id="dpn-confirm-title">Delete permanently?</p>
+      <p class="dpn-modal__message" id="dpn-confirm-message" hidden></p>
+    </div>
+    <div class="dpn-modal__actions">
+      <button type="button" class="dpn-btn dpn-btn--action" id="dpn-confirm-cancel">No</button>
+      <button type="button" class="dpn-btn dpn-btn--danger" id="dpn-confirm-ok">Yes</button>
+    </div>
+  </div>
+</div>

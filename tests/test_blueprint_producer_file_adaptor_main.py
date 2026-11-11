@@ -1,0 +1,880 @@
+import base64
+import importlib.util
+import os
+import sys
+import types
+from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
+
+
+SOURCE_PATH = Path(
+    os.getenv(
+        "FILE_ADAPTOR_MAIN_PATH",
+        "blueprints/producer/file/adaptor/main.py",
+    )
+)
+
+
+def b64(value: str) -> str:
+    return base64.b64encode(value.encode("utf-8")).decode("utf-8")
+
+
+class FakeAzureError(Exception):
+    pass
+
+
+class FakeHttpResponseError(FakeAzureError):
+    pass
+
+
+class FakeBotoCoreError(Exception):
+    pass
+
+
+class FakeClientError(Exception):
+    pass
+
+
+class FakeGoogleAPIError(Exception):
+    pass
+
+
+class FakeCopyResult:
+    def __init__(self, copied=True, skipped=False, reason="ok"):
+        self.copied = copied
+        self.skipped = skipped
+        self.reason = reason
+
+
+class FakeMetric:
+    def __init__(self):
+        self.calls = []
+
+    def add(self, value, attributes=None):
+        self.calls.append(("add", value, attributes))
+
+    def record(self, value, attributes=None):
+        self.calls.append(("record", value, attributes))
+
+
+class FakeMeter:
+    def create_counter(self, **kwargs):
+        return FakeMetric()
+
+    def create_histogram(self, **kwargs):
+        return FakeMetric()
+
+
+class FakeSpan:
+    def __init__(self):
+        self.attributes = {}
+        self.exceptions = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def set_attribute(self, key, value):
+        self.attributes[key] = value
+
+    def record_exception(self, exc):
+        self.exceptions.append(exc)
+
+
+class FakeTracer:
+    def start_as_current_span(self, name):
+        return FakeSpan()
+
+
+class FakeLogger:
+    def __init__(self):
+        self.info_calls = []
+        self.error_calls = []
+
+    def info(self, message, *args, extra=None, **kwargs):
+        self.info_calls.append((message, args, extra, kwargs))
+
+    def error(self, message, *args, extra=None, **kwargs):
+        self.error_calls.append((message, args, extra, kwargs))
+
+
+class FakeDataTransection:
+    instances = []
+    source_files = ["file1.csv", "file2.csv"]
+    source_exception = None
+    copy_results = {}
+    copy_exception = None
+    copy_exceptions_by_file = {}
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.source_file_info_calls = []
+        self.file_copy_calls = []
+        self.ensure_container_calls = []
+        FakeDataTransection.instances.append(self)
+
+    def ensure_container_exists(self, cloud_provider, container_name, side="source"):
+        self.ensure_container_calls.append((cloud_provider, container_name, side))
+        return True
+
+    def source_file_info(self, cloud_provider):
+        self.source_file_info_calls.append(cloud_provider)
+
+        if FakeDataTransection.source_exception:
+            raise FakeDataTransection.source_exception
+
+        return list(FakeDataTransection.source_files)
+
+    def file_copy(self, cloud_vendor, file_name, dest_file_name=None):
+        self.file_copy_calls.append((cloud_vendor, file_name, dest_file_name))
+
+        if FakeDataTransection.copy_exception:
+            raise FakeDataTransection.copy_exception
+
+        if file_name in FakeDataTransection.copy_exceptions_by_file:
+            raise FakeDataTransection.copy_exceptions_by_file[file_name]
+
+        return FakeDataTransection.copy_results.get(
+            file_name,
+            FakeCopyResult(copied=True, skipped=False, reason="copied"),
+        )
+
+
+class FakeKafkaTransection:
+    instances = []
+
+    def __init__(self, bootstrap_server, logger, component_name=None):
+        self.bootstrap_server = bootstrap_server
+        self.logger = logger
+        self.component_name = component_name
+        self.sent_messages = []
+        FakeKafkaTransection.instances.append(self)
+
+    def send_message(self, target_topic, message):
+        self.sent_messages.append((target_topic, message))
+
+
+class FakeHandleExceptions:
+    instances = []
+
+    def __init__(self):
+        self.handled = []
+        FakeHandleExceptions.instances.append(self)
+
+    def handle_storage_exception(self, exc, provider):
+        self.handled.append((exc, provider))
+
+
+class FakeStepLogger:
+    instances = []
+
+    def __init__(self, logger=None):
+        self.logger = logger
+        self.pipeline_banner_calls = []
+        self.step_start_calls = []
+        self.step_end_calls = []
+        self.step_failed_calls = []
+        FakeStepLogger.instances.append(self)
+
+    def pipeline_banner(self, ctx, service_name, config_summary):
+        self.pipeline_banner_calls.append((ctx, service_name, config_summary))
+
+    def step_start(self, ctx, operation, extra=None):
+        self.step_start_calls.append((ctx, operation, extra))
+
+    def step_end(self, ctx, operation, extra=None):
+        self.step_end_calls.append((ctx, operation, extra))
+
+    def step_failed(self, ctx, operation, exc=None, extra=None):
+        self.step_failed_calls.append((ctx, operation, exc, extra))
+
+
+class FakeHeartbeatLogger:
+    instances = []
+
+    def __init__(self, logger, component_name, metadata):
+        self.logger = logger
+        self.component_name = component_name
+        self.metadata = metadata
+        self.started = False
+        FakeHeartbeatLogger.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+
+class FakeBackend:
+    instances = []
+
+    def __init__(self):
+        self.execute_calls = []
+        FakeBackend.instances.append(self)
+
+    def execute(self, func, **kwargs):
+        self.execute_calls.append((func, kwargs))
+
+
+class FakeContext:
+    def __init__(
+        self,
+        triggered_by="manual",
+        run_id="run-123456789",
+        pipeline_stage="adaptor",
+    ):
+        self.triggered_by = triggered_by
+        self.run_id = run_id
+        self.pipeline_stage = pipeline_stage
+
+    def as_log_extra(self):
+        return {
+            "triggered_by": self.triggered_by,
+            "run_id": self.run_id,
+            "pipeline_stage": self.pipeline_stage,
+        }
+
+
+def identity_decorator(*decorator_args, **decorator_kwargs):
+    def wrapper(func):
+        return func
+
+    return wrapper
+
+
+@pytest.fixture(autouse=True)
+def fake_external_modules(monkeypatch):
+    FakeDataTransection.instances.clear()
+    FakeDataTransection.source_files = ["file1.csv", "file2.csv"]
+    FakeDataTransection.source_exception = None
+    FakeDataTransection.copy_results = {}
+    FakeDataTransection.copy_exception = None
+    FakeDataTransection.copy_exceptions_by_file = {}
+
+    FakeKafkaTransection.instances.clear()
+    FakeHandleExceptions.instances.clear()
+    FakeStepLogger.instances.clear()
+    FakeHeartbeatLogger.instances.clear()
+    FakeBackend.instances.clear()
+
+    # No mapperTopicName / mapperConnectionString / mapperContainerName any
+    # more — this adaptor absorbed the (now-removed) schema mapper stage
+    # entirely, so it reads target* directly. No orgName either: the file
+    # pathway no longer renames anything (see this blueprint's v3.1.0
+    # changelog entry) — orgName is now topic-pathway-only.
+    monkeypatch.setenv("cloudProviderType", "azure")
+    monkeypatch.setenv("targetTopicName", "target-topic")
+    monkeypatch.setenv("srcConnectionString", b64("source-connection"))
+    monkeypatch.setenv("srcContainerName", "source-container")
+    monkeypatch.setenv("targetConnectionString", b64("target-connection"))
+    monkeypatch.setenv("targetContainerName", "target-container")
+    monkeypatch.setenv("bootstrapServer", "localhost:9092")
+    monkeypatch.setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", b64("aws-key"))
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", b64("aws-secret"))
+    monkeypatch.setenv("AWS_REGION", "eu-west-2")
+    monkeypatch.setenv("PRODUCT_NAME", "bp-natural-gas")
+    monkeypatch.setenv("SCHEDULER_BACKEND", "standalone")
+
+    azure_pkg = types.ModuleType("azure")
+    azure_core = types.ModuleType("azure.core")
+    azure_exceptions = types.ModuleType("azure.core.exceptions")
+    azure_exceptions.AzureError = FakeAzureError
+    azure_exceptions.HttpResponseError = FakeHttpResponseError
+
+    monkeypatch.setitem(sys.modules, "azure", azure_pkg)
+    monkeypatch.setitem(sys.modules, "azure.core", azure_core)
+    monkeypatch.setitem(sys.modules, "azure.core.exceptions", azure_exceptions)
+
+    botocore_pkg = types.ModuleType("botocore")
+    botocore_exceptions = types.ModuleType("botocore.exceptions")
+    botocore_exceptions.BotoCoreError = FakeBotoCoreError
+    botocore_exceptions.ClientError = FakeClientError
+
+    monkeypatch.setitem(sys.modules, "botocore", botocore_pkg)
+    monkeypatch.setitem(sys.modules, "botocore.exceptions", botocore_exceptions)
+
+    google_pkg = types.ModuleType("google")
+    google_api_core = types.ModuleType("google.api_core")
+    google_api_core_exceptions = types.ModuleType("google.api_core.exceptions")
+    google_api_core_exceptions.GoogleAPIError = FakeGoogleAPIError
+
+    monkeypatch.setitem(sys.modules, "google", google_pkg)
+    monkeypatch.setitem(sys.modules, "google.api_core", google_api_core)
+    monkeypatch.setitem(
+        sys.modules,
+        "google.api_core.exceptions",
+        google_api_core_exceptions,
+    )
+
+    dotenv = types.ModuleType("dotenv")
+    dotenv.load_dotenv = Mock()
+    monkeypatch.setitem(sys.modules, "dotenv", dotenv)
+
+    otel = types.ModuleType("opentelemetry")
+    otel_context = types.ModuleType("opentelemetry.context")
+    otel_propagate = types.ModuleType("opentelemetry.propagate")
+
+    otel_context.attach = Mock(return_value="fake-token")
+    otel_context.get_current = Mock(return_value="fake-current-context")
+    otel_context.detach = Mock()
+    otel_propagate.extract = Mock(return_value={"remote": "context"})
+    otel_propagate.inject = Mock()
+
+    otel.context = otel_context
+    otel.propagate = otel_propagate
+
+    monkeypatch.setitem(sys.modules, "opentelemetry", otel)
+    monkeypatch.setitem(sys.modules, "opentelemetry.context", otel_context)
+    monkeypatch.setitem(sys.modules, "opentelemetry.propagate", otel_propagate)
+
+    utils_pkg = types.ModuleType("utils")
+
+    config_validator = types.ModuleType("utils.config_validator")
+    config_validator.validate_cloud_config = Mock()
+    config_validator.validate_kafka_config = Mock()
+
+    data_transection = types.ModuleType("utils.data_transection")
+    data_transection.DataTransection = FakeDataTransection
+    data_transection.gcp_credentials_from_env = lambda *_a, **_k: None
+
+    exception_handler = types.ModuleType("utils.exception_handler")
+    exception_handler.HandleExceptions = FakeHandleExceptions
+
+    kafka_transection = types.ModuleType("utils.kafka_transection")
+    kafka_transection.KafkaTransection = FakeKafkaTransection
+
+    pipeline_context = types.ModuleType("utils.pipeline_context")
+    pipeline_context.PipelineContext = FakeContext
+
+    scheduler_backend = types.ModuleType("utils.scheduler_backend")
+    scheduler_backend.get_backend = Mock(return_value=FakeBackend())
+    scheduler_backend.run_once = Mock()
+
+    step_logger = types.ModuleType("utils.step_logger")
+    step_logger.StepLogger = FakeStepLogger
+
+    topic_utils = types.ModuleType("utils.topic_utils")
+    topic_utils.KafkaTopicManager = Mock()
+
+    monkeypatch.setitem(sys.modules, "utils", utils_pkg)
+    monkeypatch.setitem(sys.modules, "utils.config_validator", config_validator)
+    monkeypatch.setitem(sys.modules, "utils.data_transection", data_transection)
+    monkeypatch.setitem(sys.modules, "utils.exception_handler", exception_handler)
+    monkeypatch.setitem(sys.modules, "utils.kafka_transection", kafka_transection)
+    monkeypatch.setitem(sys.modules, "utils.pipeline_context", pipeline_context)
+    monkeypatch.setitem(sys.modules, "utils.scheduler_backend", scheduler_backend)
+    monkeypatch.setitem(sys.modules, "utils.step_logger", step_logger)
+    monkeypatch.setitem(sys.modules, "utils.topic_utils", topic_utils)
+
+    sdk_pkg = types.ModuleType("dpn_observability_sdk")
+
+    otel_logger = types.ModuleType("dpn_observability_sdk.otel_logger")
+    otel_logger.OtelLogger = Mock(
+        return_value=types.SimpleNamespace(
+            create_logger=Mock(return_value=FakeLogger())
+        )
+    )
+
+    otel_tracer = types.ModuleType("dpn_observability_sdk.otel_tracer")
+    fake_tracer = FakeTracer()
+    otel_tracer.OtelTracer = types.SimpleNamespace(
+        initialize=Mock(return_value=fake_tracer),
+        get_tracer=Mock(return_value=fake_tracer),
+    )
+
+    otel_metrics = types.ModuleType("dpn_observability_sdk.otel_metrics")
+    otel_metrics.OtelMetrics = types.SimpleNamespace(
+        initialize=Mock(return_value=FakeMeter())
+    )
+
+    otel_instrumentation = types.ModuleType(
+        "dpn_observability_sdk.otel_instrumentation"
+    )
+    otel_instrumentation.traced = identity_decorator
+    otel_instrumentation.timed_metric = identity_decorator
+
+    heartbeat = types.ModuleType("dpn_observability_sdk.heartbeat")
+    heartbeat.HeartbeatLogger = FakeHeartbeatLogger
+
+    monkeypatch.setitem(sys.modules, "dpn_observability_sdk", sdk_pkg)
+    monkeypatch.setitem(sys.modules, "dpn_observability_sdk.otel_logger", otel_logger)
+    monkeypatch.setitem(sys.modules, "dpn_observability_sdk.otel_tracer", otel_tracer)
+    monkeypatch.setitem(sys.modules, "dpn_observability_sdk.otel_metrics", otel_metrics)
+    monkeypatch.setitem(
+        sys.modules,
+        "dpn_observability_sdk.otel_instrumentation",
+        otel_instrumentation,
+    )
+    monkeypatch.setitem(sys.modules, "dpn_observability_sdk.heartbeat", heartbeat)
+
+
+@pytest.fixture
+def load_module():
+    def _load():
+        if not SOURCE_PATH.exists():
+            pytest.skip(
+                f"Source file not found: {SOURCE_PATH}. "
+                "Run pytest from repo root or set FILE_ADAPTOR_MAIN_PATH."
+            )
+
+        module_name = "file_adaptor_main_under_test"
+
+        if module_name in sys.modules:
+            del sys.modules[module_name]
+
+        spec = importlib.util.spec_from_file_location(module_name, SOURCE_PATH)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    return _load
+
+
+def test_adaptor_initialises_config_validates_and_creates_transactions(load_module):
+    module = load_module()
+
+    adaptor = module.AdaptorFileProcess()
+
+    assert adaptor.cloud_provider == "azure"
+    assert adaptor.target_kafka_topic == "target-topic"
+    assert adaptor.source_azure_conn_str == "source-connection"
+    assert adaptor.source_container_name == "source-container"
+    assert adaptor.target_container_name == "target-container"
+    assert not hasattr(adaptor, "org_name")  # no rename, no org_name needed at all
+    assert adaptor.bootstrap_server == "localhost:9092"
+    assert adaptor.target_azure_conn_str == "target-connection"
+    assert adaptor.aws_endpoint_url == "http://localhost:4566"
+    assert adaptor.aws_access_key_id == "aws-key"
+    assert adaptor.aws_secret_access_key == "aws-secret"
+    assert adaptor.aws_region == "eu-west-2"
+    assert adaptor.heartbeat is None
+
+    module.validate_cloud_config.assert_called_once()
+    module.validate_kafka_config.assert_called_once()
+
+    data_trans = FakeDataTransection.instances[-1]
+    assert data_trans.kwargs["source_azure_conn_str"] == "source-connection"
+    assert data_trans.kwargs["target_azure_conn_str"] == "target-connection"
+    assert data_trans.kwargs["source_container_name"] == "source-container"
+    assert data_trans.kwargs["target_container_name"] == "target-container"
+    assert data_trans.kwargs["aws_endpoint_url"] == "http://localhost:4566"
+
+    # Only source + target containers ensured — no mapper container.
+    assert [call[1] for call in data_trans.ensure_container_calls] == [
+        "source-container",
+        "target-container",
+    ]
+
+    kafka_trans = FakeKafkaTransection.instances[-1]
+    assert kafka_trans.bootstrap_server == "localhost:9092"
+
+    assert adaptor.logger.info_calls[-1][0] == "Configuration validation successful"
+
+
+def test_adaptor_initialises_defaults_for_optional_env(load_module, monkeypatch):
+    monkeypatch.delenv("cloudProviderType", raising=False)
+    monkeypatch.delenv("AWS_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("AWS_REGION", raising=False)
+
+    module = load_module()
+
+    adaptor = module.AdaptorFileProcess()
+
+    assert adaptor.cloud_provider == "azure"
+    assert adaptor.aws_endpoint_url is None
+    assert adaptor.aws_region == "us-east-1"
+
+
+def test_read_source_file_info_returns_files_records_metric_and_logs(load_module):
+    module = load_module()
+    adaptor = module.AdaptorFileProcess()
+
+    FakeDataTransection.source_files = ["a.csv", "b.csv", "c.csv"]
+
+    result = adaptor.read_source_file_info()
+
+    assert result == ["a.csv", "b.csv", "c.csv"]
+    assert adaptor.data_trans.source_file_info_calls == ["azure"]
+
+    assert adaptor.files_discovered.calls[-1] == (
+        "add",
+        3,
+        {
+            "cloud_provider": "azure",
+            "container": "source-container",
+        },
+    )
+
+    assert adaptor.logger.info_calls[-1][0] == "Source files discovered"
+    assert adaptor.logger.info_calls[-1][2]["count"] == 3
+
+
+def test_move_files_copies_direct_to_target_with_unchanged_filename(load_module):
+    module = load_module()
+    adaptor = module.AdaptorFileProcess()
+
+    FakeDataTransection.copy_results = {
+        "file1.csv": FakeCopyResult(copied=True, skipped=False, reason="copied")
+    }
+
+    result = adaptor.move_files("file1.csv")
+
+    assert result is True
+    # One direct source -> target copy, no rename at all — see this
+    # blueprint's v3.1.0 changelog entry (the org-prefixed rename the
+    # removed schema mapper used to do was dropped on request).
+    assert adaptor.data_trans.file_copy_calls == [("azure", "file1.csv", "file1.csv")]
+    assert adaptor.file_name == "file1.csv"
+
+    assert adaptor.files_processed.calls[-1][0] == "add"
+    assert adaptor.files_processed.calls[-1][2]["status"] == "success"
+
+    assert adaptor.file_copy_duration.calls[-1][0] == "record"
+
+    assert adaptor.logger.info_calls[-1][0] == "Adaptor file_copy result"
+    assert adaptor.logger.info_calls[-1][2]["copied"] is True
+    assert adaptor.logger.info_calls[-1][2]["dest_file"] == "file1.csv"
+
+
+def test_move_files_leaves_spaces_and_hyphens_untouched(load_module):
+    """No normalization of any kind any more — a file with spaces/hyphens
+    in its name must reach the target container exactly as received."""
+    module = load_module()
+    adaptor = module.AdaptorFileProcess()
+
+    adaptor.move_files("test sample-1.xml")
+
+    assert adaptor.file_name == "test sample-1.xml"
+    assert adaptor.data_trans.file_copy_calls == [
+        ("azure", "test sample-1.xml", "test sample-1.xml")
+    ]
+
+
+def test_move_files_leaves_leading_space_and_at_symbol_untouched(load_module):
+    """AC2: filenames with a leading space or '@' (e.g. " logs.txt",
+    "logs@2024.txt") must reach the target container exactly as received —
+    no trim of the leading space, no alteration of '@'."""
+    module = load_module()
+    adaptor = module.AdaptorFileProcess()
+
+    adaptor.move_files(" logs.txt")
+
+    assert adaptor.file_name == " logs.txt"
+    assert adaptor.data_trans.file_copy_calls == [
+        ("azure", " logs.txt", " logs.txt")
+    ]
+
+    adaptor2 = module.AdaptorFileProcess()
+    adaptor2.move_files("logs@2024.txt")
+
+    assert adaptor2.file_name == "logs@2024.txt"
+    assert adaptor2.data_trans.file_copy_calls == [
+        ("azure", "logs@2024.txt", "logs@2024.txt")
+    ]
+
+
+def test_move_files_skipped_records_skipped_metric_and_returns_false(load_module):
+    module = load_module()
+    adaptor = module.AdaptorFileProcess()
+
+    FakeDataTransection.copy_results = {
+        "file1.csv": FakeCopyResult(copied=False, skipped=True, reason="exists")
+    }
+
+    result = adaptor.move_files("file1.csv")
+
+    assert result is False
+    assert adaptor.files_processed.calls[-1][2]["status"] == "skipped"
+    assert adaptor.logger.info_calls[-1][2]["skipped"] is True
+
+
+def test_move_files_exception_records_error_metric_and_reraises(load_module):
+    module = load_module()
+    adaptor = module.AdaptorFileProcess()
+
+    FakeDataTransection.copy_exception = RuntimeError("copy failed")
+
+    with pytest.raises(RuntimeError, match="copy failed"):
+        adaptor.move_files("bad.csv")
+
+    assert adaptor.files_processed.calls[-1][2]["status"] == "error"
+
+
+def test_send_to_kafka_when_file_moved_uses_cloud_provider_uppercase(load_module):
+    module = load_module()
+    adaptor = module.AdaptorFileProcess()
+    adaptor.cloud_provider = "azure"
+    adaptor.file_name = "file1.csv"
+
+    adaptor.send_to_kafka(True)
+
+    kafka_trans = FakeKafkaTransection.instances[-1]
+
+    assert kafka_trans.sent_messages == [
+        (
+            "target-topic",
+            {
+                "sourceType": "AZURE",
+                "storageContainer": "target-container",
+                "path": "file1.csv",
+            },
+        )
+    ]
+
+    assert adaptor.logger.info_calls[-1][0] == "Kafka message published"
+
+
+def test_send_to_kafka_when_aws_maps_source_type_to_s3(load_module, monkeypatch):
+    monkeypatch.setenv("cloudProviderType", "AWS")
+
+    module = load_module()
+    adaptor = module.AdaptorFileProcess()
+    adaptor.file_name = "file1.csv"
+
+    adaptor.send_to_kafka(True)
+
+    kafka_trans = FakeKafkaTransection.instances[-1]
+
+    assert kafka_trans.sent_messages[-1][1]["sourceType"] == "S3"
+
+
+def test_send_to_kafka_when_file_not_moved_suppresses_message(load_module):
+    module = load_module()
+    adaptor = module.AdaptorFileProcess()
+    adaptor.file_name = "file1.csv"
+
+    adaptor.send_to_kafka(False)
+
+    kafka_trans = FakeKafkaTransection.instances[-1]
+
+    assert kafka_trans.sent_messages == []
+    assert adaptor.logger.info_calls[-1][0] == "Kafka message suppressed — file not copied"
+
+
+def test_run_no_files_sets_no_files_and_returns(load_module):
+    module = load_module()
+    FakeDataTransection.source_files = []
+
+    ctx = FakeContext(run_id="run-empty-123456")
+
+    module.run(ctx)
+
+    step_log = FakeStepLogger.instances[-1]
+
+    assert step_log.pipeline_banner_calls
+    assert step_log.step_start_calls[-1][1] == "read_source_file_info"
+    assert step_log.step_end_calls[-1][1] == "read_source_file_info"
+
+    adaptor = FakeDataTransection.instances[-1]
+    assert adaptor.source_file_info_calls == ["azure"]
+
+
+def test_run_read_source_exception_is_handled_and_returns(load_module):
+    module = load_module()
+
+    FakeDataTransection.source_exception = FakeHttpResponseError("azure failed")
+    ctx = FakeContext()
+
+    module.run(ctx)
+
+    step_log = FakeStepLogger.instances[-1]
+    exc_handler = FakeHandleExceptions.instances[-1]
+
+    assert step_log.step_failed_calls[-1][1] == "read_source_file_info"
+    assert isinstance(exc_handler.handled[-1][0], FakeHttpResponseError)
+    assert exc_handler.handled[-1][1] == "Azure"
+
+
+def test_run_processes_copied_and_skipped_files_direct_to_target(load_module):
+    module = load_module()
+
+    FakeDataTransection.source_files = ["copied.csv", "skipped.csv"]
+    FakeDataTransection.copy_results = {
+        "copied.csv": FakeCopyResult(copied=True, skipped=False, reason="copied"),
+        "skipped.csv": FakeCopyResult(copied=False, skipped=True, reason="exists"),
+    }
+
+    ctx = FakeContext(run_id="run-success-123456")
+
+    module.run(ctx)
+
+    step_log = FakeStepLogger.instances[-1]
+    kafka_trans = FakeKafkaTransection.instances[-1]
+
+    move_and_publish_ends = [
+        call for call in step_log.step_end_calls if call[1] == "move_and_publish"
+    ]
+
+    assert len(move_and_publish_ends) == 2
+    assert move_and_publish_ends[0][2]["copied"] is True
+    assert move_and_publish_ends[1][2]["copied"] is False
+
+    # One hop, straight to the target topic — no mapper topic in between.
+    assert kafka_trans.sent_messages == [
+        (
+            "target-topic",
+            {
+                "sourceType": "AZURE",
+                "storageContainer": "target-container",
+                "path": "copied.csv",
+            },
+        )
+    ]
+
+
+def test_run_move_file_exception_is_handled_and_continues(load_module):
+    module = load_module()
+
+    FakeDataTransection.source_files = ["bad.csv"]
+    FakeDataTransection.copy_exception = FakeClientError("aws failed")
+
+    ctx = FakeContext()
+
+    module.run(ctx)
+
+    step_log = FakeStepLogger.instances[-1]
+    exc_handler = FakeHandleExceptions.instances[-1]
+
+    assert step_log.step_failed_calls[-1][1] == "move_and_publish"
+    assert step_log.step_failed_calls[-1][3] == {"file": "bad.csv"}
+    assert isinstance(exc_handler.handled[-1][0], FakeClientError)
+    assert exc_handler.handled[-1][1] == "AWS S3"
+
+
+def test_run_processes_file_name_with_spaces(load_module):
+    """A file like "test sample 1.xml" must be discovered and copied, not
+    silently dropped — see utils/data_transection.py's relaxed object-key
+    charset. Reaches the target container under this exact name — no
+    rename of any kind any more."""
+    module = load_module()
+
+    FakeDataTransection.source_files = ["test sample 1.xml"]
+    FakeDataTransection.copy_results = {
+        "test sample 1.xml": FakeCopyResult(copied=True, skipped=False, reason="copied"),
+    }
+
+    ctx = FakeContext(run_id="run-spaces-123456")
+
+    module.run(ctx)
+
+    kafka_trans = FakeKafkaTransection.instances[-1]
+    assert kafka_trans.sent_messages[-1][1]["path"] == "test sample 1.xml"
+
+
+def test_run_processes_file_name_with_parentheses(load_module):
+    """A file like "attribution (3).json" — a browser's own default naming
+    for a repeat download — must be discovered and copied too; confirmed
+    hitting this for real (parentheses were missing from
+    utils/data_transection.py's object-key charset even after the spaces
+    fix above). Reaches the target container under this exact name."""
+    module = load_module()
+
+    FakeDataTransection.source_files = ["attribution (3).json"]
+    FakeDataTransection.copy_results = {
+        "attribution (3).json": FakeCopyResult(copied=True, skipped=False, reason="copied"),
+    }
+
+    ctx = FakeContext(run_id="run-parens-123456")
+
+    module.run(ctx)
+
+    kafka_trans = FakeKafkaTransection.instances[-1]
+    assert kafka_trans.sent_messages[-1][1]["path"] == "attribution (3).json"
+
+
+def test_run_processes_ac2_example_filenames(load_module):
+    """AC2 — Support File Names Containing Spaces and Special Characters.
+    Each of the AC's own example filenames ("application logs.txt",
+    " logs.txt" with a leading space, "logs@2024.txt") must be discovered,
+    copied, and published to Kafka under the exact same name — no
+    trimming of the leading space, no alteration of '@' or the embedded
+    space."""
+    module = load_module()
+
+    ac2_filenames = ["application logs.txt", " logs.txt", "logs@2024.txt"]
+    FakeDataTransection.source_files = list(ac2_filenames)
+    FakeDataTransection.copy_results = {
+        name: FakeCopyResult(copied=True, skipped=False, reason="copied")
+        for name in ac2_filenames
+    }
+
+    ctx = FakeContext(run_id="run-ac2-123456")
+
+    module.run(ctx)
+
+    kafka_trans = FakeKafkaTransection.instances[-1]
+    published_paths = [msg[1]["path"] for msg in kafka_trans.sent_messages]
+
+    assert published_paths == ac2_filenames
+
+
+def test_run_processes_file_name_with_hash_symbol(load_module):
+    """AC2: '#' (e.g. "my_file #1.txt", "Order #12, Q3 & Q4.xlsx") is a
+    real business-filename character — utils/data_transection.py's
+    _validate_object_key() allows it since every key here is passed as a
+    plain SDK parameter, never assembled into a URL. Must be discovered,
+    copied, and published exactly as named."""
+    module = load_module()
+
+    FakeDataTransection.source_files = ["my_file #1.txt"]
+    FakeDataTransection.copy_results = {
+        "my_file #1.txt": FakeCopyResult(copied=True, skipped=False, reason="copied"),
+    }
+
+    ctx = FakeContext(run_id="run-ac2-hash-123456")
+
+    module.run(ctx)
+
+    kafka_trans = FakeKafkaTransection.instances[-1]
+    assert kafka_trans.sent_messages[-1][1]["path"] == "my_file #1.txt"
+
+
+def test_run_rejects_invalid_character_without_altering_or_aborting_batch(load_module):
+    """The AC's carve-out — "unless the character is invalid for the
+    storage provider" — must surface as a per-file failure (the invalid
+    key is never silently renamed/skipped to make it "work"), while a
+    co-located valid AC2-style filename in the same batch still succeeds."""
+    module = load_module()
+
+    FakeDataTransection.source_files = ["logs@2024.txt", "bad\\name.txt"]
+    FakeDataTransection.copy_results = {
+        "logs@2024.txt": FakeCopyResult(copied=True, skipped=False, reason="copied"),
+    }
+    # Mirrors utils/data_transection.py's real _validate_object_key(),
+    # which raises ValueError for a key on S3's documented "avoid" list
+    # (e.g. a backslash) rather than silently renaming or dropping it.
+    FakeDataTransection.copy_exceptions_by_file = {
+        "bad\\name.txt": ValueError("Object key contains unsafe characters: 'bad\\\\name.txt'"),
+    }
+
+    ctx = FakeContext(run_id="run-ac2-invalid-123456")
+
+    module.run(ctx)
+
+    kafka_trans = FakeKafkaTransection.instances[-1]
+    published_paths = [msg[1]["path"] for msg in kafka_trans.sent_messages]
+
+    assert published_paths == ["logs@2024.txt"]
+
+
+def test_schema_validation_stub_always_returns_true(load_module):
+    module = load_module()
+    adaptor = module.AdaptorFileProcess()
+
+    assert adaptor.schema_validation("any-file.csv") is True
+    assert adaptor.logger.info_calls[-1][0] == "Schema validation (stub – PI3)"
+
+
+def test_provider_label_returns_expected_values(load_module):
+    module = load_module()
+
+    assert module._provider_label(FakeHttpResponseError("http")) == "Azure"
+    assert module._provider_label(FakeAzureError("azure")) == "Azure"
+    assert module._provider_label(FakeClientError("client")) == "AWS S3"
+    assert module._provider_label(FakeBotoCoreError("boto")) == "AWS S3"
+    assert module._provider_label(FakeGoogleAPIError("google")) == "GCP"
+    assert module._provider_label(RuntimeError("other")) == ""
